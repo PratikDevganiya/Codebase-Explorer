@@ -16,6 +16,14 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Download the embedding model during the image build so application startup
+# does not depend on runtime access to Hugging Face.
+ENV HF_HOME=/opt/huggingface
+ENV HF_HUB_DOWNLOAD_TIMEOUT=300
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
 # Copy application code
 COPY . .
 
