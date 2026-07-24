@@ -3,10 +3,19 @@ Integration tests for API endpoints.
 """
 
 import io
+import os
 import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
+
+# API storage is replaced with in-memory fakes in these tests. Provide
+# non-secret placeholders before importing the application so CI does not
+# require production Supabase credentials during test collection.
+os.environ["SUPABASE_URL"] = "https://ci-placeholder.supabase.co"
+os.environ["SUPABASE_SECRET_KEY"] = (
+    "sb_secret_ci_placeholder_not_a_real_credential"
+)
 
 
 # Mock the initialize_system function before importing app
