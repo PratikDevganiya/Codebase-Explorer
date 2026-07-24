@@ -12,8 +12,8 @@ jobs:
     
     strategy:
       matrix:
-        # Only test actively supported Python versions
-        python-version: ['3.10', '3.11', '3.12']
+        # Match the Python version documented in README and used in Docker.
+        python-version: ['3.12']
     
     steps:
     - uses: actions/checkout@v3
