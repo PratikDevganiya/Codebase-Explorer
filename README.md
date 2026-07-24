@@ -1,376 +1,442 @@
 # Codebase Explorer
 
-<div align="center">
+An AI-powered codebase assistant that lets developers upload a software project
+and ask natural-language questions about it.
 
-![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)
-![Tests](https://img.shields.io/badge/tests-62%20passing-brightgreen.svg)
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
+[Live application](https://codebase-explorer-ypha.onrender.com) ·
+[API health](https://codebase-explorer-api.onrender.com/health) ·
+[API documentation](https://codebase-explorer-api.onrender.com/docs)
 
-**An intelligent AI-powered assistant that allows developers to interact with their codebase using natural language.**
+## Overview
 
-[Features](#-features) • [Demo](#-demo) • [Tech Stack](#-tech-stack) • [Quick Start](#-quick-start) • [Architecture](#-architecture)
+Codebase Explorer helps developers understand unfamiliar projects without
+reading every file manually. It accepts a GitHub repository, ZIP archive, or
+local folder, detects the language of each source file, creates semantic code
+embeddings, and retrieves the most relevant code before asking Gemini to
+generate an answer.
 
-</div>
+The application supports multiple projects. Source files, vector embeddings,
+project metadata, and chat history are persisted in Supabase and scoped to the
+selected project.
 
----
+## Features
 
-## 🌟 Overview
+- Import public GitHub repositories, ZIP archives, and browser-selected folders
+- Automatically detect the programming language of each file
+- Ignore common generated content such as `.git`, virtual environments,
+  `node_modules`, build output, and caches
+- Parse and split source code into searchable chunks
+- Ask project-specific questions in natural language
+- Retrieve code semantically instead of relying only on keyword matching
+- Display related files and line ranges with each answer
+- Browse an expandable VS Code-style project tree and inspect source files
+- Keep separate persisted chat history for each project and browser session
+- View project, indexing, query, and system-health information on a dashboard
+- Delete one or multiple projects, including their database records, vectors,
+  chat history, and stored source files
+- Apply upload validation, safe ZIP extraction, path validation, rate limits,
+  and project-level retrieval isolation
 
-Codebase Explorer is a Retrieval-Augmented Generation (RAG) system that enables developers to:
-- 💬 **Chat with their codebase** using natural language
-- 🔍 **Semantically search** across thousands of code files
-- 🤖 **Get AI-powered explanations** of complex code
-- 📊 **Visualize codebase insights** with interactive dashboards
+## How the AI pipeline works
 
-It combines code-aware chunking, embeddings, semantic retrieval, and a configurable LLM. Supabase provides project metadata, private file storage, pgvector retrieval, and chat persistence.
+1. The user imports a GitHub repository, ZIP file, or local folder.
+2. The backend temporarily clones or reconstructs it in a processing directory.
+3. Supported files are detected and loaded; each file is assigned its own
+   language.
+4. Tree-sitter and the chunking pipeline divide code into meaningful sections.
+5. Gemini Embedding 2 converts every chunk into a 384-dimensional vector.
+6. Source files are uploaded to private Supabase Storage. Project metadata,
+   chunks, and vectors are saved in Supabase Postgres with pgvector.
+7. When the user asks a question, the question is embedded with the same model.
+8. pgvector retrieves the most semantically relevant chunks from only the
+   selected project.
+9. The RAG pipeline sends the question and retrieved code to Gemini 3.6 Flash.
+10. The UI displays the generated answer and related source locations.
 
----
+## Technology stack
 
-## ✨ Features
+| Layer | Technology | Why it was selected |
+|---|---|---|
+| Frontend | React, TypeScript, Vite | Fast, typed, responsive single-page interface |
+| API | FastAPI, Pydantic | Typed request validation and automatic API documentation |
+| Code parsing | Tree-sitter | Code-aware structure across multiple languages |
+| Embeddings | Gemini Embedding 2 | Configurable 384-dimensional remote embeddings without a memory-heavy local model |
+| Answer generation | Gemini 3.6 Flash | Fast, cost-conscious code reasoning |
+| Retrieval | PostgreSQL + pgvector | Semantic search beside the application's relational data |
+| Persistence | Supabase Postgres and Storage | Managed database, private object storage, and vector support in one service |
+| Deployment | Render Blueprint and Docker | Reproducible frontend and backend deployment from one repository |
+| Testing | Pytest, pytest-cov | Unit and integration coverage for backend behavior |
 
-### 🎯 Core Capabilities
-- **Natural Language Queries**: Ask questions in plain English about your codebase
-- **Semantic Code Search**: Find relevant code using meaning, not just keywords
-- **AI-Powered Explanations**: Get detailed explanations of how code works
-- **Multi-Language Support**: Python, JavaScript, Java, C++, Go, and more
-- **Multiple Inputs**: GitHub repositories, ZIP archives, and local folders
-- **Project Isolation**: Retrieval and chat history are scoped per project
+## Architecture
 
-### 🎨 User Interface
-- **Modern, responsive design** with smooth animations
-- **Interactive dashboard** with real-time metrics
-- **Code syntax highlighting** for better readability
-- **Query history** to track your interactions
-
----
-
-## 🎬 Demo
-
-### Chat Interface
+```text
+┌──────────────────────────── React + TypeScript ────────────────────────────┐
+│ Project upload · Chat · Dashboard · Code explorer                         │
+└──────────────────────────────────┬─────────────────────────────────────────┘
+                                   │ HTTPS/JSON
+                                   ▼
+┌────────────────────────────── FastAPI API ─────────────────────────────────┐
+│ Ingestion routes · Query routes · File routes · Project/chat management   │
+└──────────────┬───────────────────┬──────────────────────┬──────────────────┘
+               │                   │                      │
+               ▼                   ▼                      ▼
+      Git/ZIP/folder loader   Tree-sitter parser    RAG query pipeline
+               │                   │                      │
+               └──────────────► Code chunks ◄─────────────┘
+                                   │                      │
+                                   ▼                      ▼
+                         Gemini Embedding 2       Gemini 3.6 Flash
+                                   │                      ▲
+                                   ▼                      │
+┌──────────────────────────────── Supabase ──────────────────────────────────┐
+│ Projects and chat │ Source files in private Storage │ pgvector code chunks│
+└────────────────────────────────────────────────────────────────────────────┘
 ```
-User: "How does Flask routing work in this codebase?"
 
-AI: "In this codebase, Flask routing is implemented using the @app.route() 
-decorator to map URL paths to Python functions. The routing system handles 
-incoming HTTP requests by matching the URL pattern and executing the 
-corresponding view function..."
+### Major components
+
+- `backend/ingestion`: clones GitHub repositories and safely loads uploads.
+- `backend/parsing`: detects languages, parses supported code, and creates
+  semantic chunks.
+- `backend/retrieval`: generates embeddings, indexes chunks, and performs
+  project-filtered similarity search.
+- `backend/llm`: builds retrieval queries and produces grounded answers.
+- `backend/storage`: isolates all Supabase database, vector, chat, and object
+  storage operations.
+- `backend/api`: exposes the application through FastAPI.
+- `frontend`: provides the Chat, Dashboard, attachment flow, and code explorer.
+
+### Key design decisions and trade-offs
+
+- **Per-file language detection:** mixed-language repositories work without
+  requiring the user to choose one language for the entire project.
+- **RAG instead of full-repository prompting:** only relevant chunks are sent to
+  the LLM, reducing prompt size and improving grounding.
+- **One managed data platform:** Supabase reduces operational complexity, but
+  introduces an external dependency and free-tier quotas.
+- **Remote Gemini embeddings:** this keeps the Render backend within its memory
+  limit. It trades local/offline operation for API availability and quota
+  dependence.
+- **Project-scoped retrieval:** prevents results from one uploaded project from
+  contaminating another project's answers.
+- **Temporary server workspace:** uploaded content is processed locally only
+  during ingestion; Supabase is the persistent source of truth.
+
+## Project structure
+
+```text
+Codebase-Explorer/
+├── backend/
+│   ├── api/                 # FastAPI routes and request/response models
+│   ├── ingestion/           # GitHub, ZIP, and folder ingestion
+│   ├── llm/                 # Gemini client and RAG pipeline
+│   ├── parsing/             # Language detection, parsing, and chunking
+│   ├── retrieval/           # Embeddings, pgvector search, and indexing
+│   └── storage/             # Supabase repositories and source storage
+├── config/                  # Environment-based application settings
+├── frontend/                # React + TypeScript application
+├── scripts/                 # Run and production-validation scripts
+├── supabase/migrations/     # Database, pgvector, storage, and chat migrations
+├── tests/                   # Unit and integration tests
+├── Dockerfile               # Production backend image
+├── render.yaml              # Render Blueprint
+├── requirements-prod.txt    # Minimal production dependencies
+├── requirements.txt         # Local development and test dependencies
+└── README.md
 ```
 
-### Key Features in Action
-- 💬 **Natural conversations** about code functionality
-- 📂 **Ingest repositories** with one command
-- 💡 **Explain code snippets** interactively
-- 📊 **View analytics** on indexed codebase
-
----
-
-## 🛠️ Tech Stack
-
-### Backend
-- **FastAPI** - Modern Python web framework
-- **LangChain** - LLM application framework
-- **Supabase pgvector** - Persistent semantic retrieval
-- **Supabase Storage and Postgres** - Required hosted persistence
-- **Google Gemini** - Configurable LLM
-- **Tree-sitter** - Code parsing and AST generation
-
-### Frontend
-- **React + TypeScript** - Interactive web interface
-- **Vite** - Frontend development and production builds
-- **Custom CSS** - Responsive Chat, Dashboard, and code Explorer
-
-### Infrastructure
-- **Python 3.12+** - Modern Python features
-- **Pytest** - Comprehensive testing
-- **Docker** - Containerization (optional)
-- **Git** - Version control
-
----
-
-## 🚀 Quick Start
+## Local setup
 
 ### Prerequisites
-- Python 3.12 or higher
+
+- Python 3.12
+- Node.js 18 or newer and npm
 - Git
-- Google Gemini API key (free at [Google AI Studio](https://aistudio.google.com/app/apikey))
+- A Google AI Studio API key
+- A Supabase project with the `vector` and `pgcrypto` extensions
 
-### Installation
+### 1. Clone the repository
 
-1. **Clone the repository**
 ```bash
-git clone https://github.com/YOUR_USERNAME/Codebase-Explorer.git
+git clone https://github.com/PratikDevganiya/Codebase-Explorer.git
 cd Codebase-Explorer
 ```
 
-2. **Create virtual environment**
-```bash
-python3 -m venv codebase-explorer-env
-source codebase-explorer-env/bin/activate
-```
+### 2. Create the Python environment
 
-3. **Install dependencies**
 ```bash
+python3.12 -m venv codebase-explorer-env
+source codebase-explorer-env/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-4. **Configure API keys**
-```bash
-# Copy example environment file
-cp .env.example .env
+### 3. Configure Supabase
 
-# Edit .env and add your Gemini API key
-# GEMINI_API_KEY=your_api_key_here
+In the Supabase SQL editor, create the base `projects` table:
+
+```sql
+create extension if not exists pgcrypto;
+
+create table if not exists public.projects (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    source_type text not null
+        check (source_type in ('github', 'folder', 'zip')),
+    source_url text,
+    branch text,
+    status text not null default 'pending'
+        check (status in ('pending', 'uploading', 'indexing', 'ready', 'failed')),
+    file_count integer not null default 0 check (file_count >= 0),
+    chunk_count integer not null default 0 check (chunk_count >= 0),
+    indexed_count integer not null default 0 check (indexed_count >= 0),
+    error_message text,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create or replace function public.update_updated_at_column()
+returns trigger language plpgsql as $$
+begin
+    new.updated_at = now();
+    return new;
+end;
+$$;
+
+drop trigger if exists update_projects_updated_at on public.projects;
+create trigger update_projects_updated_at
+before update on public.projects
+for each row execute function public.update_updated_at_column();
+
+alter table public.projects enable row level security;
 ```
 
-5. **Run the system**
-```bash
-# Terminal 1: Start API server
-python scripts/run_api.py
+Then execute the files in `supabase/migrations/` in numeric order. They add the
+stable repository identifier, pgvector table and similarity function, private
+source bucket, chat persistence, and final cloud-only schema.
 
-# Terminal 2: Start frontend
+The backend uses a Supabase secret/service-role key. Never expose that key in
+React, commit it to Git, or place it in a `VITE_*` variable.
+
+### 4. Configure environment variables
+
+```bash
+cp .env.example .env
+```
+
+Set at least:
+
+```dotenv
+GEMINI_API_KEY=your_google_ai_key
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SECRET_KEY=your_backend_only_secret_key
+CORS_ORIGINS=http://localhost:3000
+```
+
+The defaults use:
+
+```dotenv
+LLM_MODEL=gemini-3.6-flash
+EMBEDDING_PROVIDER=gemini
+EMBEDDING_MODEL=gemini-embedding-2
+SUPABASE_SOURCE_BUCKET=project-sources
+```
+
+Optionally validate cloud storage after applying the migrations:
+
+```bash
+python scripts/validate_production.py
+```
+
+### 5. Start the backend
+
+```bash
+python scripts/run_api.py
+```
+
+The API runs at `http://localhost:8000`; Swagger documentation is available at
+`http://localhost:8000/docs`.
+
+### 6. Start the frontend
+
+In a second terminal:
+
+```bash
 cd frontend
 npm install
+cp .env.example .env.local
 npm run dev
 ```
 
-6. **Open in browser**
-```
-Frontend: http://localhost:3000
-API Docs: http://localhost:8000/docs
-```
+Open `http://localhost:3000`.
 
----
+## Example usage
 
-## 📁 Project Structure
-```
-Codebase-Explorer/
-├── backend/
-│   ├── api/              # FastAPI REST endpoints
-│   │   ├── main.py       # Main API application
-│   │   └── models.py     # Pydantic models
-│   ├── ingestion/        # Repository loading & processing
-│   │   ├── github_loader.py
-│   │   └── document_loader.py
-│   ├── parsing/          # Code parsing & chunking
-│   │   ├── chunker.py
-│   │   └── language_detector.py
-│   ├── retrieval/        # Vector search & embeddings
-│   │   ├── embeddings.py
-│   │   ├── vector_store.py
-│   │   ├── indexer.py
-│   │   └── search.py
-│   └── llm/             # LLM integration
-│       ├── llm_client.py
-│       ├── rag_pipeline.py
-│       └── query_constructor.py
-│   └── storage/         # Local/Supabase persistence adapters
-├── frontend/            # React + TypeScript UI
-│   ├── src/
-│   └── package.json
-├── tests/              # Unit & integration tests
-│   ├── test_*.py
-│   └── conftest.py
-├── data/               # Temporary clone and upload workspace
-├── config/             # Configuration
-│   └── settings.py
-├── scripts/            # Utility scripts
-│   ├── run_api.py
-│   └── validate_production.py
-├── supabase/
-│   └── migrations/     # Hosted database and storage schema
-├── .env.example        # Environment template
-├── requirements.txt    # Python dependencies
-└── README.md          # This file
-```
+### Through the UI
 
----
+1. Open the Chat page.
+2. Select the plus button.
+3. Attach a GitHub repository, ZIP archive, or local folder.
+4. Wait until the project status becomes **Ready**.
+5. Ask questions such as:
+   - “Explain the architecture of this project.”
+   - “How does authentication work?”
+   - “Which API creates a user?”
+   - “Where is data stored and retrieved?”
+   - “Which files should I change to add this feature?”
+6. Select a related file or choose **View code** to inspect the implementation.
 
-## 🏗️ Architecture
+### Through the API
 
-### System Design
-```
-┌─────────────┐
-│   Frontend  │ (React)
-│  localhost  │
-│    :3000    │
-└──────┬──────┘
-       │ HTTP Requests
-       ▼
-┌─────────────┐
-│  FastAPI    │ (REST API)
-│   Server    │
-│  localhost  │
-│    :8000    │
-└──────┬──────┘
-       │
-       ├──► 🔍 Query Pipeline
-       │    ├─► Vector Search (pgvector)
-       │    ├─► Context Retrieval
-       │    └─► LLM Generation (Gemini)
-       │
-       ├──► 📥 Ingestion Pipeline
-       │    ├─► Code Loading
-       │    ├─► Parsing & Chunking
-       │    └─► Vector Indexing
-       │
-       └──► 💾 Data Layer
-            └─► Supabase Postgres/Storage/pgvector
-```
+Index a public GitHub repository:
 
-### RAG Pipeline Flow
-1. **User Query** → Natural language question
-2. **Query Enhancement** → Expand and optimize query
-3. **Vector Search** → Find relevant code chunks with pgvector
-4. **Context Building** → Assemble relevant code snippets
-5. **LLM Generation** → Gemini generates contextual answer
-6. **Response** → AI-powered explanation with sources
-
----
-
-## 💡 Usage Examples
-
-### 1. Index a Repository
 ```bash
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/repositories/github \
+  -H 'Content-Type: application/json' \
   -d '{
-    "repo_url": "https://github.com/username/repo",
+    "repo_url": "https://github.com/owner/repository.git",
     "branch": "main"
   }'
 ```
 
-### 2. Query Your Codebase
+Ask a project-scoped question using the returned `repository_id`:
+
 ```bash
 curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "query": "How does authentication work?",
-    "language": "python"
+    "query": "Explain the main request flow.",
+    "repository_id": "repo_your_repository_id",
+    "top_k": 5,
+    "include_context": true
   }'
 ```
 
-### 3. Explain Code Snippet
-```bash
-curl -X POST http://localhost:8000/explain \
-  -H "Content-Type: application/json" \
-  -d '{
-    "code": "def fibonacci(n): return n if n < 2 else fibonacci(n-1) + fibonacci(n-2)",
-    "language": "python"
-  }'
-```
+## Testing
 
----
+Run the full backend suite:
 
-## 🧪 Testing
 ```bash
-# Run all tests
 pytest
-
-# Run with coverage
-pytest --cov=backend --cov-report=html
-
-# Run specific test file
-pytest tests/test_vector_store.py
-
-# View coverage report
-open htmlcov/index.html
 ```
 
-**Current Test Results:**
-- ✅ 21/21 tests passing
-- 📊 45% code coverage
-- ⚡ Fast test execution
+Run with coverage:
 
----
-
-## 🔧 Configuration
-
-Key configuration options in `config/settings.py`:
-```python
-# Vector Store
-CHUNK_SIZE = 512              # Code chunk size
-CHUNK_OVERLAP = 50            # Overlap between chunks
-VECTOR_DIMENSION = 384        # Embedding dimension
-
-# LLM
-GEMINI_MODEL = "gemini-2.5-flash"
-MAX_TOKENS = 2048             # Max response tokens
-TEMPERATURE = 0.3             # Response creativity
-
-# Retrieval
-TOP_K = 20                    # Initial retrieval count
-TOP_N = 5                     # Final results to use
+```bash
+pytest --cov=backend --cov-report=term-missing --cov-report=html
 ```
 
----
+Validate the frontend:
 
-## 📈 Performance Metrics
+```bash
+cd frontend
+npm run typecheck
+npm run build
+```
 
-| Metric | Value |
-|--------|-------|
-| **Indexed Vectors** | 4,364 |
-| **Query Time** | ~11ms avg |
-| **Index Load Time** | <2s |
-| **Embedding Dimension** | 384 |
-| **Test Coverage** | 45% |
-| **Tests Passing** | 21/21 ✅ |
+At the time of this README update, the backend suite contains **55 passing
+tests** with approximately **66% statement coverage**. GitHub Actions runs the
+suite with Python 3.12. Test counts and coverage can change as the project
+evolves; the workflow result is the authoritative status.
 
----
+## Deployment
 
-## 🗺️ Roadmap
+The repository includes `render.yaml`, which creates:
 
-### Phase 1: Core Features ✅ (Completed)
-- [x] Vector-based code search
-- [x] Natural language queries
-- [x] AI-powered explanations
-- [x] Modern web interface
-- [x] Real-time indexing
+- A Docker-based FastAPI web service
+- A Vite static frontend
 
-### Phase 2: Enhancements 🚧 (In Progress)
-- [ ] Multi-repository support
-- [ ] Code generation capabilities
-- [ ] Team collaboration features
-- [ ] GitHub integration
-- [ ] VSCode extension
+### Render environment variables
 
-### Phase 3: Advanced Features 🔮 (Planned)
-- [ ] Architecture visualization
-- [ ] Code quality analysis
-- [ ] Automated documentation
-- [ ] CI/CD integration
-- [ ] Enterprise features
+Backend:
 
----
+```text
+GEMINI_API_KEY
+SUPABASE_URL
+SUPABASE_SECRET_KEY
+CORS_ORIGINS=https://your-frontend.onrender.com
+```
 
-## 🤝 Contributing
+Frontend:
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+```text
+VITE_API_URL=https://your-backend.onrender.com
+```
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+Create a Render Blueprint from this repository, enter the secret values, and
+deploy. Because Vite embeds environment variables at build time, rebuild the
+static site after changing `VITE_API_URL`. Set backend `CORS_ORIGINS` to the
+exact frontend origin without a trailing slash.
 
----
+The deployed architecture is:
 
-## 📝 License
+```text
+Render static site → Render Docker API → Gemini APIs
+                                      └→ Supabase Postgres/pgvector/Storage
+```
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+No demo credentials are required. The hosted application currently has no user
+authentication.
 
----
+## Error and edge-case handling
 
-## 🙏 Acknowledgments
+- Unsupported and generated files are excluded from indexing.
+- Empty uploads, invalid types, oversized parts, unsafe paths, and unsafe ZIP
+  members are rejected.
+- Repository IDs scope vector retrieval, files, and chat history.
+- Failed ingestion is reported through project status and error messages.
+- API ingestion and query endpoints are rate-limited.
+- Project deletion cascades through related database records and explicitly
+  removes stored source objects.
+- API health is visible in the Dashboard and through `/health`.
 
-- **Google Gemini** - AI language model
-- **Supabase pgvector** - Persistent vector similarity search
-- **FastAPI** - Modern Python web framework
-- **React** - Interactive UI framework
-- **Tree-sitter** - Code parsing library
+## Assumptions
 
----
+- GitHub ingestion currently targets repositories the server can clone; a
+  `GITHUB_TOKEN` may be configured for supported private access.
+- Source files are text-based and use a supported filename or extension.
+- One anonymous browser session represents one chat identity.
+- Supabase and Gemini are available and their quotas have not been exhausted.
+- The embedding schema and query model both use 384 dimensions.
 
-<div align="center">
+## Known limitations
 
-**⭐ Star this repo if you find it useful!**
+- There is no user authentication or tenant-level authorization yet.
+- Render Free services can sleep and may have a cold-start delay.
+- Gemini and Supabase free tiers impose request, storage, and compute limits.
+- Ingestion currently runs in the API request rather than a background job
+  queue, so very large repositories are not ideal.
+- Browser folder upload is limited by browser and server request constraints.
+- Private repository authentication is not exposed as a complete UI workflow.
+- Answers are grounded by retrieved code but can still contain LLM mistakes.
+  Related source files should be used to verify important claims.
+- Changing the embedding model requires existing projects to be reindexed.
+- Privacy extensions such as Brave Shields may block the separately hosted API
+  and must allow requests to the backend domain.
+
+## Future improvements
+
+- Add authentication, per-user ownership, and Supabase RLS policies
+- Move ingestion to background workers with progress events and retries
+- Add hybrid keyword/vector retrieval and a reranking stage
+- Add evaluation datasets for retrieval quality and answer faithfulness
+- Support incremental reindexing after Git commits instead of full ingestion
+- Add encrypted private-repository credentials and organization integrations
+- Add observability for latency, token usage, failures, and model costs
+- Add pagination and lifecycle policies for large project collections
+- Add automated end-to-end browser and deployed smoke tests
+
+## Security notes
+
+- `.env` is ignored by Git; `.env.example` contains names only.
+- Supabase secret keys and Gemini API keys belong only in the backend
+  environment.
+- Only `VITE_API_URL` is safe to expose to the browser.
+- The Supabase source bucket is private.
+- For a multi-user production release, add authentication, ownership checks,
+  and restrictive Row Level Security policies before accepting sensitive code.
+
+## License
+
+No open-source license has been added yet. All rights remain with the repository
+owner unless a license is added.
