@@ -23,6 +23,8 @@ services:
     envVars:
       - key: VITE_API_URL
         sync: false
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
     routes:
       - type: rewrite
         source: /*
