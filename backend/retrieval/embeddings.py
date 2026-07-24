@@ -3,8 +3,7 @@ Embedding Generator
 Generate embeddings for code chunks using various models.
 """
 
-from typing import List, Dict, Optional
-import numpy as np
+from typing import List, Optional
 from backend.utils import get_logger
 
 logger = get_logger(__name__)
@@ -21,7 +20,7 @@ class EmbeddingGenerator:
 
         Args:
             model_name: Name of the embedding model
-            provider: Provider (openai, huggingface, local)
+            provider: Provider (gemini, openai, huggingface)
         """
         self.model_name = model_name
         self.provider = provider
@@ -34,12 +33,29 @@ class EmbeddingGenerator:
 
     def _initialize_model(self):
         """Initialize the embedding model."""
-        if self.provider == "openai":
+        if self.provider == "gemini":
+            self._initialize_gemini()
+        elif self.provider == "openai":
             self._initialize_openai()
         elif self.provider == "huggingface":
             self._initialize_huggingface()
         else:
             logger.warning(f"Unknown provider: {self.provider}")
+
+    def _initialize_gemini(self):
+        """Initialize Gemini embeddings without a local ML model."""
+        from google import genai
+        from config.settings import settings
+
+        if not settings.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is not configured")
+
+        self.client = genai.Client(api_key=settings.gemini_api_key)
+        self.dimension = 384
+        logger.info(
+            f"Gemini embeddings initialized: {self.model_name} "
+            f"(dimension={self.dimension})"
+        )
 
     def _initialize_openai(self):
         """Initialize OpenAI embeddings."""
@@ -83,7 +99,9 @@ class EmbeddingGenerator:
             return None
 
         try:
-            if self.provider == "openai":
+            if self.provider == "gemini":
+                return self._generate_gemini_embedding(text)
+            elif self.provider == "openai":
                 return self._generate_openai_embedding(text)
             elif self.provider == "huggingface":
                 return self._generate_huggingface_embedding(text)
@@ -93,6 +111,19 @@ class EmbeddingGenerator:
         except Exception as e:
             logger.error(f"Failed to generate embedding: {e}")
             return None
+
+    def _generate_gemini_embedding(self, text: str) -> List[float]:
+        """Generate a 384-dimensional embedding using Gemini."""
+        from google.genai import types
+
+        response = self.client.models.embed_content(
+            model=self.model_name,
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=self.dimension),
+        )
+        if not response.embeddings:
+            raise RuntimeError("Gemini returned no embedding")
+        return list(response.embeddings[0].values)
 
     def _generate_openai_embedding(self, text: str) -> List[float]:
         """Generate embedding using OpenAI."""
@@ -133,7 +164,9 @@ class EmbeddingGenerator:
             if show_progress and i % (batch_size * 10) == 0:
                 logger.info(f"Progress: {i}/{total} embeddings generated")
 
-            if self.provider == "openai":
+            if self.provider == "gemini":
+                batch_embeddings = self._generate_gemini_batch(batch)
+            elif self.provider == "openai":
                 batch_embeddings = self._generate_openai_batch(batch)
             elif self.provider == "huggingface":
                 batch_embeddings = self._generate_huggingface_batch(batch)
@@ -144,6 +177,34 @@ class EmbeddingGenerator:
 
         logger.info(f"✅ Generated {len(embeddings)} embeddings")
         return embeddings
+
+    def _generate_gemini_batch(
+        self, texts: List[str]
+    ) -> List[Optional[List[float]]]:
+        """Generate Gemini embeddings in a batch."""
+        from google.genai import types
+
+        valid_positions = [i for i, text in enumerate(texts) if text and text.strip()]
+        results: List[Optional[List[float]]] = [None] * len(texts)
+        if not valid_positions:
+            return results
+
+        try:
+            response = self.client.models.embed_content(
+                model=self.model_name,
+                contents=[texts[i] for i in valid_positions],
+                config=types.EmbedContentConfig(
+                    output_dimensionality=self.dimension
+                ),
+            )
+            if len(response.embeddings or []) != len(valid_positions):
+                raise RuntimeError("Gemini returned an unexpected embedding count")
+            for position, embedding in zip(valid_positions, response.embeddings):
+                results[position] = list(embedding.values)
+            return results
+        except Exception as e:
+            logger.error(f"Gemini batch embedding failed: {e}")
+            return results
 
     def _generate_openai_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate batch of OpenAI embeddings."""

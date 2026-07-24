@@ -8,6 +8,10 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-2
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SECRET_KEY

@@ -26,9 +26,9 @@ class Settings:
 
         # Model settings
         self.embedding_provider = os.getenv(
-            "EMBEDDING_PROVIDER", "huggingface")
+            "EMBEDDING_PROVIDER", "gemini")
         self.embedding_model = os.getenv(
-            "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+            "EMBEDDING_MODEL", "gemini-embedding-2"
         )
         self.llm_model = os.getenv("LLM_MODEL", "gemini-3.6-flash")
         self.max_tokens = int(os.getenv("MAX_TOKENS", "4096"))
