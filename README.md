@@ -27,12 +27,13 @@ in Supabase and scoped to the selected projects.
 - Ignore common generated content such as `.git`, virtual environments,
   `node_modules`, build output, and caches
 - Parse and split source code into searchable chunks
-- Ask natural-language questions about one project or a selected project group
+- Ask natural-language questions about one project or an automatically grouped
+  multi-project conversation
 - Retrieve code semantically instead of relying only on keyword matching
 - Display related files and line ranges with each answer
 - Browse an expandable VS Code-style project tree and inspect source files
-- Create named chats, search recent conversations, and reopen their complete
-  project scope and message history from a collapsible workspace sidebar
+- Create named chats and reopen each project's conversations, complete project
+  scope, and message history from a collapsible workspace sidebar
 - View project, indexing, query, and system-health information on a dashboard
 - Delete one or multiple projects, including their database records, vectors,
   chat history, and stored source files
@@ -51,7 +52,7 @@ in Supabase and scoped to the selected projects.
    chunks, and vectors are saved in Supabase Postgres with pgvector.
 7. When the user asks a question, the question is embedded with the same model.
 8. pgvector retrieves the most semantically relevant chunks from only the
-   selected project.
+   projects attached to the active conversation.
 9. The RAG pipeline sends the question and retrieved code to Gemini 3.6 Flash.
 10. The UI displays the generated answer and related source locations.
 
@@ -72,27 +73,40 @@ in Supabase and scoped to the selected projects.
 ## Architecture
 
 ```text
-┌──────────────────────────── React + TypeScript ────────────────────────────┐
-│ Project upload · Chat · Dashboard · Code explorer                         │
-└──────────────────────────────────┬─────────────────────────────────────────┘
-                                   │ HTTPS/JSON
-                                   ▼
-┌────────────────────────────── FastAPI API ─────────────────────────────────┐
-│ Ingestion routes · Query routes · File routes · Project/chat management   │
-└──────────────┬───────────────────┬──────────────────────┬──────────────────┘
-               │                   │                      │
-               ▼                   ▼                      ▼
-      Git/ZIP/folder loader   Tree-sitter parser    RAG query pipeline
-               │                   │                      │
-               └──────────────► Code chunks ◄─────────────┘
-                                   │                      │
-                                   ▼                      ▼
-                         Gemini Embedding 2       Gemini 3.6 Flash
-                                   │                      ▲
-                                   ▼                      │
-┌──────────────────────────────── Supabase ──────────────────────────────────┐
-│ Projects and chat │ Source files in private Storage │ pgvector code chunks│
-└────────────────────────────────────────────────────────────────────────────┘
+ GitHub · ZIP · Local folder
+              │
+              ▼
+┌───────────────────────────┐
+│ React + TypeScript        │
+│ Login · Upload · Chat     │
+│ Dashboard · Code explorer│
+└─────────────┬─────────────┘
+              │ HTTPS / JSON
+              ▼
+┌───────────────────────────┐
+│ FastAPI backend           │
+│ Auth · Validation · Scope │
+└──────┬─────────────┬──────┘
+       │             │
+       │ Index       │ Ask
+       ▼             ▼
+┌──────────────┐  ┌────────────────┐
+│ Detect files │  │ Embed question │
+│ Tree-sitter  │  │ Search pgvector│
+│ Code chunks  │  │ Retrieve code  │
+└──────┬───────┘  └───────┬────────┘
+       │                  │
+       ▼                  ▼
+ Gemini Embedding 2   RAG context
+       │                  │
+       ▼                  ▼
+┌────────────────┐   Gemini 3.6 Flash
+│ Supabase       │          │
+│ PostgreSQL     │          ▼
+│ pgvector       │   Answer + file references
+│ Private Storage│
+│ Chats/projects│
+└────────────────┘
 ```
 
 ### Major components
@@ -235,6 +249,15 @@ SUPABASE_SECRET_KEY=your_backend_only_secret_key
 CORS_ORIGINS=http://localhost:3000
 ```
 
+For private GitHub repositories that the configured account can access, you may
+also set:
+
+```dotenv
+GITHUB_TOKEN=your_fine_grained_github_token
+```
+
+Public GitHub repositories do not require this token.
+
 To enable the optional single-user login, also set:
 
 ```dotenv
@@ -304,11 +327,27 @@ Open `http://localhost:3000`.
 
 ### Through the API
 
+If administrator authentication is enabled, first request an access token:
+
+```bash
+curl -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "your_private_id",
+    "password": "your_password"
+  }'
+```
+
+Copy the returned `access_token` and include it as
+`Authorization: Bearer YOUR_ACCESS_TOKEN` in the protected requests below.
+When authentication is not configured, that header is unnecessary.
+
 Index a public GitHub repository:
 
 ```bash
 curl -X POST http://localhost:8000/repositories/github \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
   -d '{
     "repo_url": "https://github.com/owner/repository.git",
     "branch": "main"
@@ -320,6 +359,7 @@ Ask a project-scoped question using the returned `repository_id`:
 ```bash
 curl -X POST http://localhost:8000/query \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
   -d '{
     "query": "Explain the main request flow.",
     "repository_id": "repo_your_repository_id",
@@ -349,11 +389,6 @@ cd frontend
 npm run typecheck
 npm run build
 ```
-
-At the time of this README update, the backend suite contains **61 passing
-tests** with approximately **67% statement coverage**. GitHub Actions runs the
-suite with Python 3.12. Test counts and coverage can change as the project
-evolves; the workflow result is the authoritative status.
 
 ## Deployment
 
@@ -406,6 +441,8 @@ the repository.
 - Conversation IDs persist named chat history, while repository IDs scope
   vector retrieval and source files.
 - Failed ingestion is reported through project status and error messages.
+- Gemini embedding batches use retry handling and fall back to per-chunk
+  requests when the provider returns an incomplete batch response.
 - API ingestion and query endpoints are rate-limited.
 - Project deletion cascades through related database records and explicitly
   removes stored source objects.

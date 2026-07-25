@@ -63,16 +63,19 @@ function NavigationIcon({ name }: { name: Page }) {
   );
 }
 
-function useStoredState<T>(key: string, initial: T) {
+function useSessionState<T>(key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
     try {
-      const stored = localStorage.getItem(key);
+      const stored = sessionStorage.getItem(key);
       return stored ? (JSON.parse(stored) as T) : initial;
     } catch {
       return initial;
     }
   });
-  useEffect(() => localStorage.setItem(key, JSON.stringify(value)), [key, value]);
+  useEffect(
+    () => sessionStorage.setItem(key, JSON.stringify(value)),
+    [key, value],
+  );
   return [value, setValue] as const;
 }
 
@@ -755,18 +758,21 @@ function ChatPage({
   const [error, setError] = useState("");
   const [repositories, setRepositories] = useState<RepositoryRecord[]>([]);
   const [conversations, setConversations] = useState<ConversationRecord[]>([]);
-  const [activeConversationId, setActiveConversationId] = useStoredState(
+  const [activeConversationId, setActiveConversationId] = useSessionState(
     "codebase-active-conversation",
     "",
   );
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedProjectId, setExpandedProjectId] = useState("");
-  const [selectedId, setSelectedId] = useStoredState("rag-active-repository", "");
-  const [selectedIds, setSelectedIds] = useStoredState<string[]>(
+  const [selectedId, setSelectedId] = useSessionState(
+    "rag-active-repository",
+    "",
+  );
+  const [selectedIds, setSelectedIds] = useSessionState<string[]>(
     "rag-selected-repositories",
     [],
   );
-  const [sessionId] = useStoredState("rag-session-id", crypto.randomUUID());
+  const [sessionId] = useSessionState("rag-session-id", crypto.randomUUID());
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachType, setAttachType] = useState<"github" | "zip" | "folder" | "code">("github");
   const [projectName, setProjectName] = useState("");
@@ -797,10 +803,7 @@ function ChatPage({
       );
       const requested = preferredIds || selectedIds;
       const valid = requested.filter((repositoryId) => available.has(repositoryId));
-      const fallback = readyRecords[0]?.repository_id
-        ? [readyRecords[0].repository_id]
-        : [];
-      const nextIds = valid.length ? valid : fallback;
+      const nextIds = valid;
       setSelectedIds(nextIds);
       setSelectedId(
         nextIds.includes(selectedId) ? selectedId : (nextIds[0] || ""),

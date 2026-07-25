@@ -15,15 +15,18 @@ logger = get_logger(__name__)
 def check_imports():
     """Check if all required packages can be imported."""
     packages = {
-        "langchain": "langchain",
-        "llama-index": "llama_index",
-        "tree_sitter": "tree_sitter",
-        "git": "git",
-        "google.generativeai": "google.generativeai",
-        "fastapi": "fastapi",
-        "sentence_transformers": "sentence_transformers",
-        "openai": "openai",
-        "supabase": "supabase",
+        "Tree-sitter": "tree_sitter",
+        "Tree-sitter languages": "tree_sitter_languages",
+        "GitPython": "git",
+        "Google Gen AI": "google.genai",
+        "FastAPI": "fastapi",
+        "Uvicorn": "uvicorn",
+        "Python multipart": "multipart",
+        "Python dotenv": "dotenv",
+        "Pydantic": "pydantic",
+        "Loguru": "loguru",
+        "SlowAPI": "slowapi",
+        "Supabase": "supabase",
     }
 
     failed = []
