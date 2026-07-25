@@ -73,40 +73,25 @@ in Supabase and scoped to the selected projects.
 ## Architecture
 
 ```text
- GitHub · ZIP · Local folder
-              │
-              ▼
-┌───────────────────────────┐
-│ React + TypeScript        │
-│ Login · Upload · Chat     │
-│ Dashboard · Code explorer│
-└─────────────┬─────────────┘
-              │ HTTPS / JSON
-              ▼
-┌───────────────────────────┐
-│ FastAPI backend           │
-│ Auth · Validation · Scope │
-└──────┬─────────────┬──────┘
-       │             │
-       │ Index       │ Ask
-       ▼             ▼
-┌──────────────┐  ┌────────────────┐
-│ Detect files │  │ Embed question │
-│ Tree-sitter  │  │ Search pgvector│
-│ Code chunks  │  │ Retrieve code  │
-└──────┬───────┘  └───────┬────────┘
-       │                  │
-       ▼                  ▼
- Gemini Embedding 2   RAG context
-       │                  │
-       ▼                  ▼
-┌────────────────┐   Gemini 3.6 Flash
-│ Supabase       │          │
-│ PostgreSQL     │          ▼
-│ pgvector       │   Answer + file references
-│ Private Storage│
-│ Chats/projects│
-└────────────────┘
+┌─────────────────────────────────────┐
+│          React Frontend              │
+│ Upload projects · Chat · Code viewer │
+└──────────────────┬──────────────────┘
+                   │ HTTPS / JSON
+                   ▼
+┌─────────────────────────────────────┐
+│          FastAPI Backend             │
+│ Validation · Ingestion · Retrieval   │
+│ RAG orchestration · Authentication   │
+└───────────┬────────────────┬────────┘
+            │                │
+            ▼                ▼
+┌───────────────────┐  ┌──────────────────┐
+│ Supabase          │  │ Gemini APIs      │
+│ PostgreSQL        │  │ Embeddings       │
+│ pgvector          │  │ Answer generation│
+│ Private storage   │  └──────────────────┘
+└───────────────────┘
 ```
 
 ### Major components
