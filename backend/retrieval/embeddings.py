@@ -6,6 +6,12 @@ Generate embeddings for code chunks using various models.
 from typing import List, Optional
 import re
 import time
+
+from backend.llm.gemini_keys import (
+    GeminiClientPool,
+    configured_gemini_keys,
+    is_gemini_quota_error,
+)
 from backend.utils import get_logger
 
 logger = get_logger(__name__)
@@ -48,17 +54,61 @@ class EmbeddingGenerator:
     def _initialize_gemini(self):
         """Initialize Gemini embeddings without a local ML model."""
         from google import genai
-        from config.settings import settings
 
-        if not settings.gemini_api_key:
+        api_keys = configured_gemini_keys()
+        if not api_keys:
             raise RuntimeError("GEMINI_API_KEY is not configured")
 
-        self.client = genai.Client(api_key=settings.gemini_api_key)
+        self._gemini_pool = GeminiClientPool(
+            api_keys,
+            lambda key: genai.Client(api_key=key),
+        )
+        self.client = self._gemini_pool.active_client()
         self.dimension = 384
         logger.info(
             f"Gemini embeddings initialized: {self.model_name} "
-            f"(dimension={self.dimension})"
+            f"(dimension={self.dimension}, "
+            f"API keys={self._gemini_pool.key_count})"
         )
+
+    def _gemini_embed_content(self, *, contents, config):
+        """Call Gemini embeddings and switch keys only on quota exhaustion."""
+        pool = getattr(self, "_gemini_pool", None)
+        if pool is None:
+            return self.client.models.embed_content(
+                model=self.model_name,
+                contents=contents,
+                config=config,
+            )
+
+        candidates = list(pool.candidates())
+        last_error = None
+        for position, (key_index, key_client) in enumerate(candidates):
+            try:
+                response = key_client.models.embed_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=config,
+                )
+                self.client = pool.activate(key_index)
+                return response
+            except Exception as error:
+                last_error = error
+                if (
+                    is_gemini_quota_error(error)
+                    and position + 1 < len(candidates)
+                ):
+                    next_index, _ = candidates[position + 1]
+                    self.client = pool.activate(next_index)
+                    logger.warning(
+                        "Gemini embedding quota exhausted for API key "
+                        f"{position + 1}/{len(candidates)}; switching to key "
+                        f"{position + 2}/{len(candidates)}"
+                    )
+                    continue
+                raise
+
+        raise RuntimeError("Gemini embedding request failed") from last_error
 
     def _initialize_openai(self):
         """Initialize OpenAI embeddings."""
@@ -119,8 +169,7 @@ class EmbeddingGenerator:
         """Generate a 384-dimensional embedding using Gemini."""
         from google.genai import types
 
-        response = self.client.models.embed_content(
-            model=self.model_name,
+        response = self._gemini_embed_content(
             contents=text,
             config=types.EmbedContentConfig(output_dimensionality=self.dimension),
         )
@@ -195,8 +244,7 @@ class EmbeddingGenerator:
 
         for attempt in range(3):
             try:
-                response = self.client.models.embed_content(
-                    model=self.model_name,
+                response = self._gemini_embed_content(
                     contents=[texts[i] for i in valid_positions],
                     config=types.EmbedContentConfig(
                         output_dimensionality=self.dimension
@@ -221,7 +269,7 @@ class EmbeddingGenerator:
                 return results
             except Exception as error:
                 message = str(error)
-                rate_limited = "429" in message or "RESOURCE_EXHAUSTED" in message
+                rate_limited = is_gemini_quota_error(error)
                 if rate_limited and attempt < 2:
                     delay_match = re.search(
                         r"(?:retry in\s*|retryDelay['\"]?:\s*['\"])([\d.]+)s",
@@ -262,10 +310,7 @@ class EmbeddingGenerator:
                 except Exception as error:
                     message = str(error)
                     self.last_error = message
-                    rate_limited = (
-                        "429" in message
-                        or "RESOURCE_EXHAUSTED" in message
-                    )
+                    rate_limited = is_gemini_quota_error(error)
                     if rate_limited and attempt < 2:
                         delay = min(float(2 ** (attempt + 1)), 10.0)
                         logger.warning(

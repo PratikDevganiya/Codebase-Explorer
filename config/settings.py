@@ -11,6 +11,9 @@ class Settings:
     def __init__(self):
         # API Keys
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.gemini_api_key_backup = os.getenv(
+            "GEMINI_API_KEY_BACKUP", ""
+        )
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.supabase_url = os.getenv("SUPABASE_URL", "")
         self.supabase_secret_key = os.getenv("SUPABASE_SECRET_KEY", "")

@@ -8,6 +8,8 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_API_KEY_BACKUP
+        sync: false
       - key: EMBEDDING_PROVIDER
         value: gemini
       - key: EMBEDDING_MODEL
