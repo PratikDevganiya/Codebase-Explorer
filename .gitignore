@@ -40,10 +40,6 @@ wheels/
 *.swo
 *~
 
-# Temporary processing data
-data/repositories/*
-data/uploads/*
-
 # Logs
 *.log
 logs/

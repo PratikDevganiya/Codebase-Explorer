@@ -23,7 +23,7 @@ class GitHubLoader:
 
         Args:
             local_path: Base directory for cloning repos.
-                       Defaults to data/repositories
+                       Defaults to the system temporary processing directory.
         """
         if local_path is None:
             from config.settings import settings

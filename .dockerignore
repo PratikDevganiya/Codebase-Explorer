@@ -14,10 +14,7 @@ ENV/
 .env.*
 !.env.example
 
-# Data and logs
-data/repositories/*
-data/uploads/*
-data/vector_store/*
+# Logs
 logs/*
 *.log
 

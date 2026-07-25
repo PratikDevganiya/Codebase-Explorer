@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -18,11 +19,17 @@ class Settings:
         )
         self.github_token = os.getenv("GITHUB_TOKEN", "")
 
-        # Paths
+        # Temporary processing paths. Persistent project data lives in
+        # Supabase; clones and uploads only exist here during ingestion.
         self.base_dir = Path(__file__).parent.parent
-        self.data_dir = self.base_dir / "data"
-        self.repositories_path = self.data_dir / "repositories"
-        self.uploads_path = self.data_dir / "uploads"
+        self.processing_dir = Path(
+            os.getenv(
+                "PROCESSING_DIR",
+                str(Path(tempfile.gettempdir()) / "codebase-explorer"),
+            )
+        )
+        self.repositories_path = self.processing_dir / "repositories"
+        self.uploads_path = self.processing_dir / "uploads"
 
         # Model settings
         self.embedding_provider = os.getenv(
@@ -52,9 +59,8 @@ class Settings:
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
 
         # Create directories
-        self.data_dir.mkdir(exist_ok=True)
-        self.repositories_path.mkdir(exist_ok=True)
-        self.uploads_path.mkdir(exist_ok=True)
+        self.repositories_path.mkdir(parents=True, exist_ok=True)
+        self.uploads_path.mkdir(parents=True, exist_ok=True)
 
 
 # Create singleton

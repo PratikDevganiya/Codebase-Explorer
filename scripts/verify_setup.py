@@ -43,7 +43,7 @@ def check_directories():
     from config.settings import settings
 
     dirs = [
-        settings.data_dir,
+        settings.processing_dir,
         settings.repositories_path,
         settings.uploads_path,
     ]

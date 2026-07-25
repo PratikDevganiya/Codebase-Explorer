@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir -r requirements-prod.txt
 # Copy application code
 COPY . .
 
-# Create temporary processing directories
-RUN mkdir -p data/repositories data/uploads logs
+# Create the log directory. Temporary ingestion work uses the system temp path.
+RUN mkdir -p logs
 
 # Expose ports
 EXPOSE 8000
