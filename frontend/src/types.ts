@@ -66,6 +66,7 @@ export interface RepositoryRecord {
   files_processed: number;
   chunks_created: number;
   chunks_indexed: number;
+  error_message?: string | null;
   created_at: string;
   updated_at: string;
 }

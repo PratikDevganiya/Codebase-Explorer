@@ -60,10 +60,19 @@ class Indexer:
 
         failed_count = sum(embedding is None for embedding in embeddings)
         if failed_count:
+            provider_error = getattr(
+                self.embedding_generator,
+                "last_error",
+                None,
+            )
+            detail = (
+                f" Provider error: {str(provider_error)[:500]}"
+                if provider_error
+                else ""
+            )
             raise RuntimeError(
                 f"Embedding generation failed for {failed_count} of "
-                f"{len(chunks)} chunks; nothing was indexed. "
-                "Wait for the embedding quota to reset and try again."
+                f"{len(chunks)} chunks; nothing was indexed.{detail}"
             )
 
         # Keep the defensive filter for custom embedding providers.

@@ -109,6 +109,23 @@ def _set_ingestion_progress(
     }
 
 
+def _mark_repository_failed(repository_id: str, error: Exception) -> None:
+    """Persist terminal ingestion failures instead of leaving projects indexing."""
+    try:
+        record = repository_registry.get(repository_id)
+        if record:
+            repository_registry.upsert({
+                **record,
+                "status": "failed",
+                "error_message": str(error)[:1000],
+            })
+    except Exception as persistence_error:
+        logger.error(
+            "Could not persist failed repository status: "
+            f"{persistence_error}"
+        )
+
+
 def _encode_token(username: str) -> str:
     expires_at = int(time.time()) + settings.auth_token_hours * 60 * 60
     payload = base64.urlsafe_b64encode(
@@ -726,10 +743,10 @@ async def ingest_repository(
     if not indexer:
         raise HTTPException(status_code=503, detail="System not initialized")
 
+    repository_id = create_repository_id()
     repo_path = None
     operation_id = (payload.operation_id or "")[:100]
     try:
-        repository_id = create_repository_id()
         display_name = payload.repo_url.rstrip("/").split("/")[-1].replace(".git", "")
         loader = GitHubLoader()
         _set_ingestion_progress(
@@ -762,6 +779,7 @@ async def ingest_repository(
         )
     except Exception as e:
         _set_ingestion_progress(operation_id, "failed", 100, str(e))
+        _mark_repository_failed(repository_id, e)
         if repo_path and repo_path.exists():
             shutil.rmtree(repo_path, ignore_errors=True)
         logger.error(f"Ingestion failed: {e}")
@@ -838,11 +856,13 @@ async def ingest_upload(request: Request):
             )
     except (ValueError, json.JSONDecodeError) as e:
         _set_ingestion_progress(operation_id, "failed", 100, str(e))
+        _mark_repository_failed(repository_id, e)
         if destination.exists():
             shutil.rmtree(destination)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         _set_ingestion_progress(operation_id, "failed", 100, str(e))
+        _mark_repository_failed(repository_id, e)
         if destination.exists():
             shutil.rmtree(destination)
         logger.error(f"Upload ingestion failed: {e}")

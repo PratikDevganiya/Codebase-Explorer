@@ -791,10 +791,15 @@ function ChatPage({
     try {
       const records = await api.repositories();
       setRepositories(records);
-      const available = new Set(records.map((record) => record.repository_id));
+      const readyRecords = records.filter((record) => record.status === "ready");
+      const available = new Set(
+        readyRecords.map((record) => record.repository_id),
+      );
       const requested = preferredIds || selectedIds;
       const valid = requested.filter((repositoryId) => available.has(repositoryId));
-      const fallback = records[0]?.repository_id ? [records[0].repository_id] : [];
+      const fallback = readyRecords[0]?.repository_id
+        ? [readyRecords[0].repository_id]
+        : [];
       const nextIds = valid.length ? valid : fallback;
       setSelectedIds(nextIds);
       setSelectedId(
@@ -1339,8 +1344,9 @@ function ChatPage({
                     <span>
                       <strong>{repository.name}</strong>
                       <small>
-                        {repository.source_type} · {projectConversations.length} chat
-                        {projectConversations.length === 1 ? "" : "s"}
+                        {repository.status === "failed"
+                          ? `${repository.source_type} · Failed`
+                          : `${repository.source_type} · ${projectConversations.length} chat${projectConversations.length === 1 ? "" : "s"}`}
                       </small>
                     </span>
                   </button>

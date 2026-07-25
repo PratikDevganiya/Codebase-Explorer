@@ -28,6 +28,7 @@ class EmbeddingGenerator:
         self.provider = provider
         self.model = None
         self.dimension = None
+        self.last_error: Optional[str] = None
 
         self._initialize_model()
 
@@ -156,6 +157,7 @@ class EmbeddingGenerator:
             List of embedding vectors
         """
         embeddings = []
+        self.last_error = None
         total = len(texts)
 
         logger.info(f"Generating {total} embeddings...")
@@ -200,9 +202,16 @@ class EmbeddingGenerator:
                         output_dimensionality=self.dimension
                     ),
                 )
-                if len(response.embeddings or []) != len(valid_positions):
-                    raise RuntimeError(
-                        "Gemini returned an unexpected embedding count"
+                received = len(response.embeddings or [])
+                if received != len(valid_positions):
+                    logger.warning(
+                        "Gemini batch response count mismatch "
+                        f"(requested={len(valid_positions)}, received={received}); "
+                        "retrying each embedding individually"
+                    )
+                    return self._generate_gemini_individually(
+                        texts,
+                        valid_positions,
                     )
                 for position, embedding in zip(
                     valid_positions,
@@ -231,8 +240,45 @@ class EmbeddingGenerator:
                     )
                     time.sleep(delay)
                     continue
+                self.last_error = message
                 logger.error(f"Gemini batch embedding failed: {error}")
                 return results
+        return results
+
+    def _generate_gemini_individually(
+        self,
+        texts: List[str],
+        valid_positions: List[int],
+    ) -> List[Optional[List[float]]]:
+        """Recover from incompatible Gemini batch responses one input at a time."""
+        results: List[Optional[List[float]]] = [None] * len(texts)
+        for position in valid_positions:
+            for attempt in range(3):
+                try:
+                    results[position] = self._generate_gemini_embedding(
+                        texts[position]
+                    )
+                    break
+                except Exception as error:
+                    message = str(error)
+                    self.last_error = message
+                    rate_limited = (
+                        "429" in message
+                        or "RESOURCE_EXHAUSTED" in message
+                    )
+                    if rate_limited and attempt < 2:
+                        delay = min(float(2 ** (attempt + 1)), 10.0)
+                        logger.warning(
+                            "Gemini embedding quota reached during individual "
+                            f"retry; waiting {delay:.1f} seconds"
+                        )
+                        time.sleep(delay)
+                        continue
+                    logger.error(
+                        "Gemini individual embedding failed at input "
+                        f"{position}: {error}"
+                    )
+                    break
         return results
 
     def _generate_openai_batch(self, texts: List[str]) -> List[List[float]]:

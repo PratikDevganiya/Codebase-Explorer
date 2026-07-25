@@ -107,6 +107,7 @@ class RepositoryRecord(BaseModel):
     files_processed: int = 0
     chunks_created: int = 0
     chunks_indexed: int = 0
+    error_message: Optional[str] = None
     created_at: str
     updated_at: str
 
