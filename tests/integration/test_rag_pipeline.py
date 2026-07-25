@@ -119,3 +119,62 @@ def test_query_is_scoped_to_selected_repository():
 
     assert response["num_sources"] == 1
     assert response["sources"][0]["name"] == "beta_only"
+
+
+def test_query_can_search_across_selected_repositories():
+    embedding_gen = SimpleEmbedding()
+    vector_store = InMemoryVectorStore(dimension=384)
+    chunks = [
+        CodeChunk(
+            content="def shared_alpha(): return 'alpha'",
+            metadata={
+                "type": "function",
+                "name": "shared_alpha",
+                "language": "python",
+                "repository_id": "repo_alpha",
+                "repository_name": "Alpha",
+                "file_path": "src/shared.py",
+            },
+        ),
+        CodeChunk(
+            content="def shared_beta(): return 'beta'",
+            metadata={
+                "type": "function",
+                "name": "shared_beta",
+                "language": "python",
+                "repository_id": "repo_beta",
+                "repository_name": "Beta",
+                "file_path": "src/shared.py",
+            },
+        ),
+        CodeChunk(
+            content="def excluded_gamma(): return 'gamma'",
+            metadata={
+                "type": "function",
+                "name": "excluded_gamma",
+                "language": "python",
+                "repository_id": "repo_gamma",
+                "repository_name": "Gamma",
+                "file_path": "src/gamma.py",
+            },
+        ),
+    ]
+    Indexer(embedding_gen, vector_store).index_chunks(chunks)
+    pipeline = RAGPipeline(
+        CodeSearchEngine(vector_store, embedding_gen),
+        MockLLMClient(),
+    )
+
+    response = pipeline.query(
+        "show shared functions",
+        repository_ids=["repo_alpha", "repo_beta"],
+    )
+
+    assert {source["repository_id"] for source in response["sources"]} == {
+        "repo_alpha",
+        "repo_beta",
+    }
+    assert {source["repository_name"] for source in response["sources"]} == {
+        "Alpha",
+        "Beta",
+    }

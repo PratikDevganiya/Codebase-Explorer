@@ -91,6 +91,38 @@ class GitHubLoader:
             return clone_path
 
         except git.exc.GitCommandError as e:
+            missing_branch = (
+                branch
+                and (
+                    "Remote branch" in str(e)
+                    or "couldn't find remote ref" in str(e)
+                )
+            )
+            if missing_branch:
+                logger.warning(
+                    f"Branch '{branch}' was not found; retrying with the "
+                    "repository's default branch"
+                )
+                shutil.rmtree(clone_path, ignore_errors=True)
+                try:
+                    repo = Repo.clone_from(
+                        repo_url,
+                        clone_path,
+                        depth=1,
+                    )
+                    active_branch = repo.active_branch.name
+                    logger.info(
+                        f"✅ Successfully cloned {repo_name} "
+                        f"(default branch: {active_branch})"
+                    )
+                    return clone_path
+                except git.exc.GitCommandError as fallback_error:
+                    logger.error(
+                        f"❌ Default branch clone also failed: {fallback_error}"
+                    )
+                    raise Exception(
+                        f"Git clone failed: {str(fallback_error)}"
+                    )
             logger.error(f"❌ Failed to clone repository: {e}")
             raise Exception(f"Git clone failed: {str(e)}")
         except Exception as e:

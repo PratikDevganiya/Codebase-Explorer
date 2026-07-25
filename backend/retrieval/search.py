@@ -42,6 +42,7 @@ class CodeSearchEngine:
         file_type: Optional[str] = None,
         code_type: Optional[str] = None,
         repository_id: Optional[str] = None,
+        repository_ids: Optional[List[str]] = None,
     ) -> List[Dict]:
         """
         Search for code using natural language query.
@@ -63,15 +64,25 @@ class CodeSearchEngine:
             filters["extension"] = file_type
         if code_type:
             filters["type"] = code_type
-        if repository_id:
+        if repository_id and not repository_ids:
             filters["repository_id"] = repository_id
 
         logger.info(f"Searching: '{query}' with filters: {filters}")
 
         # Retrieve results
-        results = self.retriever.retrieve(
-            query=query, filters=filters if filters else None, context_window=3
-        )
+        if repository_ids:
+            results = self.retriever.retrieve_across_repositories(
+                query=query,
+                repository_ids=repository_ids,
+                filters=filters if filters else None,
+                context_window=3,
+            )
+        else:
+            results = self.retriever.retrieve(
+                query=query,
+                filters=filters if filters else None,
+                context_window=3,
+            )
 
         # Format results for display
         formatted_results = self._format_results(results)
@@ -103,6 +114,8 @@ class CodeSearchEngine:
                 "content": metadata.get("content", ""),
                 "explanation": result.get("relevance_explanation", ""),
                 "context": result.get("context", {}),
+                "repository_id": metadata.get("repository_id"),
+                "repository_name": metadata.get("repository_name"),
             }
 
             formatted.append(formatted_result)

@@ -109,6 +109,19 @@ def test_query_endpoint():
     assert 'sources' in data
 
 
+def test_query_endpoint_accepts_multiple_repository_ids():
+    response = client.post(
+        "/query",
+        json={
+            "query": "test query",
+            "repository_ids": ["repo_alpha", "repo_beta"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "answer" in response.json()
+
+
 def test_explain_endpoint():
     """Test explain endpoint."""
     payload = {

@@ -1,5 +1,5 @@
 import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { api, authToken } from "./api";
 import type {
   ChatMessage,
   HealthResponse,
@@ -414,6 +414,9 @@ function CodeExplorer({
 }
 
 export default function App() {
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authenticatedUser, setAuthenticatedUser] = useState("");
   const [page, setPage] = useState<Page>("chat");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -442,13 +445,71 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const checkAuthentication = async () => {
+      try {
+        const status = await api.authStatus(controller.signal);
+        if (!status.enabled) {
+          setAuthRequired(false);
+          setAuthenticatedUser("");
+          return;
+        }
+        setAuthRequired(true);
+        if (authToken.get()) {
+          const user = await api.currentUser(controller.signal);
+          setAuthenticatedUser(user.username);
+        }
+      } catch (error) {
+        if ((error as Error).name !== "AbortError") {
+          setAuthenticatedUser("");
+        }
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    const requireLogin = () => {
+      setAuthRequired(true);
+      setAuthenticatedUser("");
+      setAuthLoading(false);
+    };
+    window.addEventListener("codebase-auth-required", requireLogin);
+    checkAuthentication();
+    return () => {
+      controller.abort();
+      window.removeEventListener("codebase-auth-required", requireLogin);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authLoading || (authRequired && !authenticatedUser)) return;
+    const controller = new AbortController();
     refreshStatus(controller.signal);
     const timer = window.setInterval(() => refreshStatus(), 30_000);
     return () => {
       controller.abort();
       window.clearInterval(timer);
     };
-  }, []);
+  }, [authLoading, authRequired, authenticatedUser]);
+
+  if (authLoading) {
+    return <div className="auth-loading">Loading Codebase Explorer…</div>;
+  }
+
+  if (authRequired && !authenticatedUser) {
+    return (
+      <LoginPage
+        onAuthenticated={(username) => setAuthenticatedUser(username)}
+      />
+    );
+  }
+
+  const logout = () => {
+    authToken.clear();
+    setAuthenticatedUser("");
+    setMessages([]);
+    setRepositories([]);
+    setStats(null);
+    setHealth(null);
+  };
 
   return (
     <div className="app-shell">
@@ -468,6 +529,11 @@ export default function App() {
               <span><NavigationIcon name={item.icon} /></span>{item.label}
             </button>
           ))}
+          {authRequired && (
+            <button className="nav-item logout-button" onClick={logout}>
+              Logout
+            </button>
+          )}
         </nav>
       </div>
 
@@ -503,6 +569,72 @@ export default function App() {
   );
 }
 
+function LoginPage({
+  onAuthenticated,
+}: {
+  onAuthenticated: (username: string) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submitLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!username.trim() || !password || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await api.login(username.trim(), password);
+      authToken.set(response.access_token);
+      onAuthenticated(username.trim());
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="login-page">
+      <section className="login-card">
+        <strong className="brand-wordmark login-brand">
+          <span>Codebase</span><span>Explorer</span>
+        </strong>
+        <p className="eyebrow">PRIVATE CODE INTELLIGENCE</p>
+        <h1>Welcome back</h1>
+        <p className="login-description">Sign in to access your projects, chats, and dashboard.</p>
+        <form onSubmit={submitLogin}>
+          <label>
+            ID
+            <input
+              autoComplete="username"
+              autoFocus
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="Enter your ID"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter your password"
+            />
+          </label>
+          {error && <p className="login-error">{error}</p>}
+          <button disabled={!username.trim() || !password || submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function ChatPage({
   messages,
   setMessages,
@@ -517,6 +649,10 @@ function ChatPage({
   const [error, setError] = useState("");
   const [repositories, setRepositories] = useState<RepositoryRecord[]>([]);
   const [selectedId, setSelectedId] = useStoredState("rag-active-repository", "");
+  const [selectedIds, setSelectedIds] = useStoredState<string[]>(
+    "rag-selected-repositories",
+    [],
+  );
   const [sessionId] = useStoredState("rag-session-id", crypto.randomUUID());
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachType, setAttachType] = useState<"github" | "zip" | "folder" | "code">("github");
@@ -527,6 +663,7 @@ function ChatPage({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [phase, setPhase] = useState<"" | "uploading" | "cloning" | "indexing" | "analyzing" | "ready">("");
   const [explorerOpen, setExplorerOpen] = useState(false);
+  const [explorerRepositoryId, setExplorerRepositoryId] = useState("");
   const [repositoryFiles, setRepositoryFiles] = useState<RepositoryFile[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [fileContent, setFileContent] = useState<RepositoryFileContent | null>(null);
@@ -536,13 +673,19 @@ function ChatPage({
   const [highlight, setHighlight] = useState<{ start: number; end: number } | null>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
-  const loadRepositories = async () => {
+  const loadRepositories = async (preferredIds?: string[]) => {
     try {
       const records = await api.repositories();
       setRepositories(records);
-      if (!records.some((record) => record.repository_id === selectedId)) {
-        setSelectedId(records[0]?.repository_id || "");
-      }
+      const available = new Set(records.map((record) => record.repository_id));
+      const requested = preferredIds || selectedIds;
+      const valid = requested.filter((repositoryId) => available.has(repositoryId));
+      const fallback = records[0]?.repository_id ? [records[0].repository_id] : [];
+      const nextIds = valid.length ? valid : fallback;
+      setSelectedIds(nextIds);
+      setSelectedId(
+        nextIds.includes(selectedId) ? selectedId : (nextIds[0] || ""),
+      );
     } catch {
       // The main API status notice already reports connectivity failures.
     }
@@ -552,12 +695,28 @@ function ChatPage({
     loadRepositories();
   }, []);
 
+  const selectedIdsKey = selectedIds.join(",");
+
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedIds.length) {
+      setMessages([]);
+      return;
+    }
     const controller = new AbortController();
     setMessages([]);
-    api.chatMessages(selectedId, sessionId, controller.signal)
-      .then((storedMessages) => {
+    Promise.all(
+      selectedIds.map((repositoryId) => (
+        api.chatMessages(repositoryId, sessionId, controller.signal)
+      )),
+    )
+      .then((messageGroups) => {
+        const uniqueMessages = new Map<string, ChatMessage>();
+        messageGroups.flat().forEach((message) => {
+          uniqueMessages.set(message.id, message);
+        });
+        const storedMessages = [...uniqueMessages.values()].sort((left, right) => (
+          (left.created_at || "").localeCompare(right.created_at || "")
+        ));
         setMessages(storedMessages);
       })
       .catch((requestError) => {
@@ -566,7 +725,7 @@ function ChatPage({
         }
       });
     return () => controller.abort();
-  }, [selectedId, sessionId]);
+  }, [selectedIdsKey, sessionId]);
 
   useEffect(() => {
     folderInput.current?.setAttribute("webkitdirectory", "");
@@ -574,11 +733,12 @@ function ChatPage({
   }, [attachType]);
 
   useEffect(() => {
-    if (!explorerOpen || !selectedId) return;
+    const repositoryId = explorerRepositoryId || selectedId;
+    if (!explorerOpen || !repositoryId) return;
     const controller = new AbortController();
     setFileLoading(true);
     setExplorerError("");
-    api.repositoryFiles(selectedId, controller.signal)
+    api.repositoryFiles(repositoryId, controller.signal)
       .then(async (files) => {
         setRepositoryFiles(files);
         if (!files.length) {
@@ -590,7 +750,7 @@ function ChatPage({
           ? selectedPath
           : files[0].path;
         setSelectedPath(nextPath);
-        setFileContent(await api.repositoryFile(selectedId, nextPath, controller.signal));
+        setFileContent(await api.repositoryFile(repositoryId, nextPath, controller.signal));
       })
       .catch((requestError) => {
         if ((requestError as Error).name !== "AbortError") {
@@ -599,9 +759,16 @@ function ChatPage({
       })
       .finally(() => setFileLoading(false));
     return () => controller.abort();
-  }, [explorerOpen, selectedId]);
+  }, [explorerOpen, explorerRepositoryId, selectedId]);
 
   const activeRepository = repositories.find((item) => item.repository_id === selectedId);
+  const activeRepositories = selectedIds
+    .map((repositoryId) => (
+      repositories.find((item) => item.repository_id === repositoryId)
+    ))
+    .filter((repository): repository is RepositoryRecord => !!repository);
+  const selectedProjectCount = activeRepositories.length;
+  const selectedProjectNames = activeRepositories.map((repository) => repository.name);
 
   const setCurrentMessages = (nextMessages: ChatMessage[]) => {
     setMessages(nextMessages);
@@ -609,6 +776,21 @@ function ChatPage({
 
   const selectRepository = (repositoryId: string) => {
     setSelectedId(repositoryId);
+    setSelectedIds(repositoryId ? [repositoryId] : []);
+    setMessages([]);
+    setExplorerOpen(false);
+    setFileContent(null);
+    setSelectedPath("");
+    setHighlight(null);
+    setExplorerRepositoryId(repositoryId);
+  };
+
+  const setProjectSelection = (repositoryIds: string[]) => {
+    const uniqueIds = [...new Set(repositoryIds)];
+    setSelectedIds(uniqueIds);
+    if (!uniqueIds.includes(selectedId)) {
+      setSelectedId(uniqueIds[0] || "");
+    }
     setMessages([]);
     setExplorerOpen(false);
     setFileContent(null);
@@ -616,10 +798,21 @@ function ChatPage({
     setHighlight(null);
   };
 
+  const toggleChatRepository = (repositoryId: string) => {
+    const nextIds = selectedIds.includes(repositoryId)
+      ? selectedIds.filter((item) => item !== repositoryId)
+      : [...selectedIds, repositoryId];
+    setProjectSelection(nextIds);
+  };
+
   const clearCurrentMessages = () => {
     setCurrentMessages([]);
-    if (selectedId) {
-      api.clearChatMessages(selectedId, sessionId).catch(() => {
+    if (selectedIds.length) {
+      Promise.all(
+        selectedIds.map((repositoryId) => (
+          api.clearChatMessages(repositoryId, sessionId)
+        )),
+      ).catch(() => {
         // The visible chat is already cleared; report failures on next load.
       });
     }
@@ -640,7 +833,14 @@ function ChatPage({
         (repository) => repository.repository_id !== activeRepository.repository_id,
       );
       setRepositories(remaining);
-      selectRepository(remaining[0]?.repository_id || "");
+      const remainingSelected = selectedIds.filter(
+        (repositoryId) => repositoryId !== activeRepository.repository_id,
+      );
+      setProjectSelection(
+        remainingSelected.length
+          ? remainingSelected
+          : (remaining[0]?.repository_id ? [remaining[0].repository_id] : []),
+      );
       setMessages([]);
       onIndexComplete();
     } catch (requestError) {
@@ -654,14 +854,15 @@ function ChatPage({
     path: string,
     lineRange: { start: number; end: number } | null = null,
   ) => {
-    if (!selectedId) return;
+    const repositoryId = explorerRepositoryId || selectedId;
+    if (!repositoryId) return;
     setExplorerOpen(true);
     setSelectedPath(path);
     setHighlight(lineRange);
     setFileLoading(true);
     setExplorerError("");
     try {
-      setFileContent(await api.repositoryFile(selectedId, path));
+      setFileContent(await api.repositoryFile(repositoryId, path));
     } catch (requestError) {
       setExplorerError((requestError as Error).message);
     } finally {
@@ -670,6 +871,14 @@ function ChatPage({
   };
 
   const openSource = (source: SourceReference) => {
+    const repositoryId = source.repository_id || selectedId;
+    if (repositoryId && repositoryId !== explorerRepositoryId) {
+      setExplorerRepositoryId(repositoryId);
+      setSelectedPath(source.path);
+      setHighlight(sourceLineRange(source.lines));
+      setExplorerOpen(true);
+      return;
+    }
     const path = resolveSourcePath(repositoryFiles, source);
     if (path) {
       openFile(path, sourceLineRange(source.lines));
@@ -710,24 +919,71 @@ function ChatPage({
         return;
       }
 
-      let result: IngestResponse;
+      const results: IngestResponse[] = [];
       if (attachType === "github") {
-        if (!repoUrl.trim()) return;
+        const urls = repoUrl
+          .split(/[\n,]+/)
+          .map((url) => url.trim())
+          .filter(Boolean);
+        if (!urls.length) return;
+        if (urls.length > 10) {
+          throw new Error("Attach at most 10 GitHub repositories at once.");
+        }
         setPhase("cloning");
-        const request = api.ingest(repoUrl.trim(), branch.trim() || "main");
         window.setTimeout(() => setPhase((current) => current === "cloning" ? "indexing" : current), 900);
-        result = await request;
+        for (const url of urls) {
+          results.push(await api.ingest(url, branch.trim() || "main"));
+        }
       } else {
-        if (!selectedFiles.length || !projectName.trim()) return;
+        if (!selectedFiles.length) return;
         setPhase("uploading");
-        const request = api.uploadProject(attachType, projectName.trim(), selectedFiles);
         window.setTimeout(() => setPhase((current) => current === "uploading" ? "indexing" : current), 900);
-        result = await request;
+        if (attachType === "zip") {
+          if (selectedFiles.length > 10) {
+            throw new Error("Attach at most 10 ZIP projects at once.");
+          }
+          for (const file of selectedFiles) {
+            const displayName = (
+              selectedFiles.length === 1 && projectName.trim()
+                ? projectName.trim()
+                : file.name.replace(/\.zip$/i, "")
+            );
+            results.push(
+              await api.uploadProject("zip", displayName, [file]),
+            );
+          }
+        } else {
+          const folders = new Map<string, File[]>();
+          for (const file of selectedFiles) {
+            const relative = (
+              file as File & { webkitRelativePath?: string }
+            ).webkitRelativePath || file.name;
+            const root = relative.split("/")[0] || projectName.trim() || "Project";
+            folders.set(root, [...(folders.get(root) || []), file]);
+          }
+          if (folders.size > 10) {
+            throw new Error("Attach at most 10 folders at once.");
+          }
+          for (const [folderName, files] of folders) {
+            const displayName = (
+              folders.size === 1 && projectName.trim()
+                ? projectName.trim()
+                : folderName
+            );
+            results.push(
+              await api.uploadProject("folder", displayName, files),
+            );
+          }
+        }
       }
       setPhase("ready");
-      selectRepository(result.repository_id);
-      await loadRepositories();
+      const uploadedIds = results.map((result) => result.repository_id);
+      setProjectSelection(uploadedIds);
+      await loadRepositories(uploadedIds);
       onIndexComplete();
+      setRepoUrl("");
+      setProjectName("");
+      setSelectedFiles([]);
       window.setTimeout(() => {
         setAttachOpen(false);
         setPhase("");
@@ -735,13 +991,15 @@ function ChatPage({
     } catch (requestError) {
       setPhase("");
       setError((requestError as Error).message);
+      await loadRepositories();
+      onIndexComplete();
     }
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const text = query.trim();
-    if (!text || loading || !selectedId) return;
+    if (!text || loading || !selectedIds.length) return;
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content: text };
     const pending = [...messages, userMessage];
     setCurrentMessages(pending);
@@ -749,7 +1007,7 @@ function ChatPage({
     setLoading(true);
     setError("");
     try {
-      const result = await api.query(text, selectedId, sessionId);
+      const result = await api.query(text, selectedIds, sessionId);
       setCurrentMessages([...pending, {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -757,8 +1015,7 @@ function ChatPage({
         sources: result.sources,
       }]);
       if (explorerOpen && result.sources.length) {
-        const path = resolveSourcePath(repositoryFiles, result.sources[0]);
-        if (path) await openFile(path, sourceLineRange(result.sources[0].lines));
+        openSource(result.sources[0]);
       }
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -785,7 +1042,11 @@ function ChatPage({
         <div className="panel-heading">
           <div>
             <h2>Ask your codebase</h2>
-            <p>{activeRepository ? `Answers are scoped to ${activeRepository.name}.` : "Attach a project to begin."}</p>
+            <p>
+              {selectedProjectCount
+                ? `Answers are scoped to ${selectedProjectNames.join(", ")}.`
+                : "Attach one or more projects to begin."}
+            </p>
           </div>
           {messages.length > 0 && <button className="text-button" onClick={clearCurrentMessages}>Clear chat</button>}
         </div>
@@ -793,7 +1054,18 @@ function ChatPage({
           <div className="workspace-strip">
             <div className="repository-chip">
               <span>⌘</span>
-              <div><strong>{activeRepository.name}</strong><small>{activeRepository.source_type} · ready</small></div>
+              <div>
+                <strong>
+                  {selectedProjectCount === 1
+                    ? activeRepository.name
+                    : `${selectedProjectCount} projects selected`}
+                </strong>
+                <small>
+                  {selectedProjectCount === 1
+                    ? `${activeRepository.source_type} · ready`
+                    : "combined project search"}
+                </small>
+              </div>
               <button onClick={() => setAttachOpen(!attachOpen)} aria-label="Change project">Change</button>
               <button
                 className="chip-delete"
@@ -805,13 +1077,21 @@ function ChatPage({
               </button>
             </div>
             {repositories.length > 1 && (
-              <select value={selectedId} onChange={(event) => {
-                selectRepository(event.target.value);
-              }} aria-label="Active repository">
-                {repositories.map((repository) => (
-                  <option value={repository.repository_id} key={repository.repository_id}>{repository.name}</option>
-                ))}
-              </select>
+              <details className="project-picker">
+                <summary>Select projects ({selectedProjectCount})</summary>
+                <div>
+                  {repositories.map((repository) => (
+                    <label key={repository.repository_id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(repository.repository_id)}
+                        onChange={() => toggleChatRepository(repository.repository_id)}
+                      />
+                      <span>{repository.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </details>
             )}
             <button
               className="explorer-toggle"
@@ -835,7 +1115,13 @@ function ChatPage({
             </div>
             {attachType === "github" ? (
               <div className="attachment-fields">
-                <input type="url" value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} placeholder="https://github.com/owner/repository" required />
+                <textarea
+                  className="repository-url-input"
+                  value={repoUrl}
+                  onChange={(event) => setRepoUrl(event.target.value)}
+                  placeholder={"One GitHub URL per line\nhttps://github.com/owner/repository"}
+                  required
+                />
                 <input value={branch} onChange={(event) => setBranch(event.target.value)} placeholder="main" aria-label="Git branch" />
               </div>
             ) : attachType === "code" ? (
@@ -849,23 +1135,30 @@ function ChatPage({
               />
             ) : (
               <div className="attachment-fields upload-fields">
-                <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project name" required />
+                <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project name (optional for batches)" />
                 <label className="file-picker">
                   <input
                     ref={attachType === "folder" ? folderInput : undefined}
                     type="file"
                     accept={attachType === "zip" ? ".zip,application/zip" : undefined}
-                    multiple={attachType === "folder"}
+                    multiple
                     onChange={(event) => {
                       const files = Array.from(event.target.files || []);
-                      setSelectedFiles(files);
+                      setSelectedFiles((current) => (
+                        attachType === "folder" ? [...current, ...files] : files
+                      ));
                       if (!projectName && files.length) {
                         const relative = (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath;
                         setProjectName(relative?.split("/")[0] || files[0].name.replace(/\.zip$/i, ""));
                       }
+                      if (attachType === "folder") event.target.value = "";
                     }}
                   />
-                  {selectedFiles.length ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected` : `Choose ${attachType}`}
+                  {selectedFiles.length
+                    ? `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected`
+                    : attachType === "zip"
+                      ? "Choose one or more ZIP files"
+                      : "Choose folder (repeat to add more)"}
                 </label>
               </div>
             )}
@@ -883,8 +1176,12 @@ function ChatPage({
         <div className="messages" aria-live="polite">
           {messages.length === 0 && (
             <EmptyState
-              title={activeRepository ? `Chat with ${activeRepository.name}` : "Attach a project or paste code"}
-              text={activeRepository ? "Ask about the project, or use the plus button to paste a code snippet." : "Use the plus button to add a project or explain a pasted code snippet."}
+              title={selectedProjectCount
+                ? `Chat with ${selectedProjectCount === 1 ? activeRepository?.name : `${selectedProjectCount} projects`}`
+                : "Attach a project or paste code"}
+              text={selectedProjectCount
+                ? "Ask across the selected project scope, or use the plus button to attach more."
+                : "Use the plus button to add one or more projects or explain pasted code."}
             />
           )}
           {messages.map((message) => (
@@ -903,6 +1200,7 @@ function ChatPage({
                         title={`Open ${source.path}, lines ${source.lines}`}
                       >
                         <span>‹›</span>
+                        {source.repository_name && <em>{source.repository_name}</em>}
                         {source.file}
                         <small>:{source.lines}</small>
                       </button>
@@ -921,8 +1219,16 @@ function ChatPage({
               <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
-          <input disabled={!activeRepository} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={activeRepository ? `Ask about ${activeRepository.name}…` : "Attach a project to start chatting"} aria-label="Codebase question" />
-          <button disabled={!query.trim() || loading || !activeRepository}>{loading ? "Working…" : "Ask →"}</button>
+          <input
+            disabled={!selectedProjectCount}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={selectedProjectCount
+              ? `Ask about ${selectedProjectCount === 1 ? activeRepository?.name : `${selectedProjectCount} projects`}…`
+              : "Attach a project to start chatting"}
+            aria-label="Codebase question"
+          />
+          <button disabled={!query.trim() || loading || !selectedProjectCount}>{loading ? "Working…" : "Ask →"}</button>
         </form>
       </div>
     </section>

@@ -18,6 +18,14 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: AUTH_TOKEN_HOURS
+        value: "12"
 
   - type: web
     name: codebase-explorer

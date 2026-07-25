@@ -43,13 +43,22 @@ def create_search_prompt(query: str, context: List[Dict]) -> str:
         content = item.get("content", metadata.get("content", ""))
 
         prompt += f"### Context {i}\n"
-        prompt += f"**File**: {metadata.get('file_path', 'N/A')}\n"
-        prompt += f"**Type**: {metadata.get('type', 'code')}\n"
-        if metadata.get("name"):
-            prompt += f"**Name**: {metadata.get('name')}\n"
-        prompt += f"**Lines**: {metadata.get('start_line', '?')}-{metadata.get('end_line', '?')}\n"
-        prompt += f"**Language**: {metadata.get('language', 'N/A')}\n"
-        prompt += f"\n```{metadata.get('language', '')}\n{content}\n```\n\n"
+        repository_name = (
+            metadata.get("repository_name") or item.get("repository_name")
+        )
+        if repository_name:
+            prompt += f"**Project**: {repository_name}\n"
+        prompt += f"**File**: {metadata.get('file_path') or item.get('file_path', 'N/A')}\n"
+        prompt += f"**Type**: {metadata.get('type') or item.get('type', 'code')}\n"
+        name = metadata.get("name") or item.get("name")
+        if name:
+            prompt += f"**Name**: {name}\n"
+        start_line = metadata.get("start_line", item.get("start_line", "?"))
+        end_line = metadata.get("end_line", item.get("end_line", "?"))
+        language = metadata.get("language") or item.get("language", "N/A")
+        prompt += f"**Lines**: {start_line}-{end_line}\n"
+        prompt += f"**Language**: {language}\n"
+        prompt += f"\n```{language}\n{content}\n```\n\n"
 
     prompt += f"## User Question\n{query}\n\n"
     prompt += "## Instructions\n"

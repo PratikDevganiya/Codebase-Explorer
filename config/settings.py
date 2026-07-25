@@ -54,6 +54,21 @@ class Settings:
             "CORS_ORIGINS", "http://localhost:3000").split(",")
         self.query_rate_limit = os.getenv("QUERY_RATE_LIMIT", "30/minute")
         self.ingest_rate_limit = os.getenv("INGEST_RATE_LIMIT", "5/hour")
+        self.admin_username = os.getenv("ADMIN_USERNAME", "").strip()
+        self.admin_password = os.getenv("ADMIN_PASSWORD", "")
+        self.auth_secret = os.getenv("AUTH_SECRET", "")
+        self.auth_token_hours = int(os.getenv("AUTH_TOKEN_HOURS", "12"))
+
+        configured_auth_values = (
+            self.admin_username,
+            self.admin_password,
+            self.auth_secret,
+        )
+        if any(configured_auth_values) and not all(configured_auth_values):
+            raise RuntimeError(
+                "ADMIN_USERNAME, ADMIN_PASSWORD, and AUTH_SECRET must all be configured"
+            )
+        self.auth_enabled = all(configured_auth_values)
 
         # Logging
         self.log_level = os.getenv("LOG_LEVEL", "INFO")

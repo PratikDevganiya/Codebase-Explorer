@@ -7,6 +7,17 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=1, max_length=500)
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
 class QueryRequest(BaseModel):
     """Request model for code search query."""
 
@@ -21,6 +32,11 @@ class QueryRequest(BaseModel):
     )
     repository_id: Optional[str] = Field(
         None, description="Restrict retrieval to one indexed repository"
+    )
+    repository_ids: Optional[List[str]] = Field(
+        None,
+        max_length=10,
+        description="Restrict retrieval to up to ten indexed repositories",
     )
     session_id: Optional[str] = Field(
         None, description="Anonymous browser session used for chat persistence"
@@ -37,6 +53,8 @@ class SourceReference(BaseModel):
     lines: str
     language: str
     relevance: float
+    repository_id: Optional[str] = None
+    repository_name: Optional[str] = None
 
 
 class QueryResponse(BaseModel):

@@ -4,6 +4,8 @@ Generate embeddings for code chunks using various models.
 """
 
 from typing import List, Optional
+import re
+import time
 from backend.utils import get_logger
 
 logger = get_logger(__name__)
@@ -189,22 +191,49 @@ class EmbeddingGenerator:
         if not valid_positions:
             return results
 
-        try:
-            response = self.client.models.embed_content(
-                model=self.model_name,
-                contents=[texts[i] for i in valid_positions],
-                config=types.EmbedContentConfig(
-                    output_dimensionality=self.dimension
-                ),
-            )
-            if len(response.embeddings or []) != len(valid_positions):
-                raise RuntimeError("Gemini returned an unexpected embedding count")
-            for position, embedding in zip(valid_positions, response.embeddings):
-                results[position] = list(embedding.values)
-            return results
-        except Exception as e:
-            logger.error(f"Gemini batch embedding failed: {e}")
-            return results
+        for attempt in range(3):
+            try:
+                response = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=[texts[i] for i in valid_positions],
+                    config=types.EmbedContentConfig(
+                        output_dimensionality=self.dimension
+                    ),
+                )
+                if len(response.embeddings or []) != len(valid_positions):
+                    raise RuntimeError(
+                        "Gemini returned an unexpected embedding count"
+                    )
+                for position, embedding in zip(
+                    valid_positions,
+                    response.embeddings,
+                ):
+                    results[position] = list(embedding.values)
+                return results
+            except Exception as error:
+                message = str(error)
+                rate_limited = "429" in message or "RESOURCE_EXHAUSTED" in message
+                if rate_limited and attempt < 2:
+                    delay_match = re.search(
+                        r"(?:retry in\s*|retryDelay['\"]?:\s*['\"])([\d.]+)s",
+                        message,
+                        flags=re.IGNORECASE,
+                    )
+                    delay = (
+                        float(delay_match.group(1)) + 1
+                        if delay_match
+                        else float(2 ** (attempt + 1))
+                    )
+                    delay = min(max(delay, 1.0), 60.0)
+                    logger.warning(
+                        "Gemini embedding quota reached; retrying this batch "
+                        f"in {delay:.1f} seconds"
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.error(f"Gemini batch embedding failed: {error}")
+                return results
+        return results
 
     def _generate_openai_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate batch of OpenAI embeddings."""

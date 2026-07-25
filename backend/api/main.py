@@ -3,6 +3,9 @@ FastAPI Application - Production Ready with Real LLM
 """
 
 import hashlib
+import base64
+import binascii
+import hmac
 import json
 import shutil
 import time
@@ -22,7 +25,7 @@ from backend.api.models import (
     QueryRequest, QueryResponse, IngestRequest, IngestResponse,
     ExplainRequest, ExplainResponse, DebugRequest, DebugResponse,
     HealthResponse, RepositoryFile, RepositoryFileContent, RepositoryRecord,
-    SourceReference, ChatMessageRecord,
+    SourceReference, ChatMessageRecord, LoginRequest, LoginResponse,
 )
 from backend.ingestion.github_loader import GitHubLoader
 from backend.ingestion.document_loader import DocumentLoader
@@ -83,6 +86,93 @@ reindex_required = False
 repository_registry = SupabaseRepositoryMetadataStore()
 source_storage = SupabaseSourceStorage()
 chat_repository = SupabaseChatRepository()
+
+
+def _encode_token(username: str) -> str:
+    expires_at = int(time.time()) + settings.auth_token_hours * 60 * 60
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {"sub": username, "exp": expires_at},
+            separators=(",", ":"),
+        ).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(
+        settings.auth_secret.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{payload}.{encoded_signature}"
+
+
+def _decode_token(token: str) -> Dict:
+    try:
+        payload, encoded_signature = token.split(".", 1)
+        expected_signature = hmac.new(
+            settings.auth_secret.encode(),
+            payload.encode(),
+            hashlib.sha256,
+        ).digest()
+        supplied_signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        if not hmac.compare_digest(expected_signature, supplied_signature):
+            raise ValueError("Invalid signature")
+        decoded = json.loads(
+            base64.urlsafe_b64decode(
+                payload + "=" * (-len(payload) % 4)
+            ).decode()
+        )
+        if decoded.get("sub") != settings.admin_username:
+            raise ValueError("Invalid user")
+        if int(decoded.get("exp", 0)) <= int(time.time()):
+            raise ValueError("Expired token")
+        return decoded
+    except (
+        ValueError,
+        TypeError,
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as error:
+        raise HTTPException(status_code=401, detail="Invalid or expired login") from error
+
+
+@app.middleware("http")
+async def require_admin_login(request: Request, call_next):
+    """Protect application APIs when single-user authentication is configured."""
+    public_paths = {"/", "/health", "/auth/status", "/auth/login"}
+    if (
+        not settings.auth_enabled
+        or request.method == "OPTIONS"
+        or request.url.path in public_paths
+    ):
+        return await call_next(request)
+
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(status_code=401, content={"detail": "Login required"})
+        origin = request.headers.get("Origin", "")
+        if origin in settings.cors_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+    try:
+        _decode_token(token)
+    except HTTPException as error:
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(
+            status_code=error.status_code,
+            content={"detail": error.detail},
+        )
+        origin = request.headers.get("Origin", "")
+        if origin in settings.cors_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+    return await call_next(request)
 
 
 def get_llm_client():
@@ -173,6 +263,34 @@ async def root():
     }
 
 
+@app.get("/auth/status")
+async def auth_status():
+    return {"enabled": settings.auth_enabled}
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+@limiter.limit("5/minute")
+async def login(payload: LoginRequest, request: Request):
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=404, detail="Authentication is not configured")
+    valid_username = hmac.compare_digest(payload.username, settings.admin_username)
+    valid_password = hmac.compare_digest(payload.password, settings.admin_password)
+    if not (valid_username and valid_password):
+        raise HTTPException(status_code=401, detail="Incorrect ID or password")
+    return LoginResponse(
+        access_token=_encode_token(payload.username),
+        expires_in=settings.auth_token_hours * 60 * 60,
+    )
+
+
+@app.get("/auth/me")
+async def current_user(request: Request):
+    authorization = request.headers.get("Authorization", "")
+    token = authorization.partition(" ")[2]
+    payload = _decode_token(token)
+    return {"username": payload["sub"]}
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check."""
@@ -201,26 +319,40 @@ async def query_code(request: Request, payload: QueryRequest):
     start_time = time.time()
     
     try:
+        repository_ids = list(dict.fromkeys(payload.repository_ids or []))
+        if payload.repository_id and payload.repository_id not in repository_ids:
+            repository_ids.insert(0, payload.repository_id)
+        if len(repository_ids) > 10:
+            raise HTTPException(
+                status_code=400,
+                detail="A query can include at most 10 projects",
+            )
+
         response = rag_pipeline.query(
             user_query=payload.query,
             language=payload.language,
             include_context=payload.include_context,
             repository_id=payload.repository_id,
+            repository_ids=repository_ids or None,
         )
         
         processing_time = time.time() - start_time
         sources = [SourceReference(**source) for source in response['sources']]
 
-        if chat_repository and payload.repository_id and payload.session_id:
+        chat_repository_id = (
+            payload.repository_id
+            or (repository_ids[0] if repository_ids else None)
+        )
+        if chat_repository and chat_repository_id and payload.session_id:
             try:
                 chat_repository.append(
-                    repository_id=payload.repository_id,
+                    repository_id=chat_repository_id,
                     session_id=payload.session_id,
                     role="user",
                     content=payload.query,
                 )
                 chat_repository.append(
-                    repository_id=payload.repository_id,
+                    repository_id=chat_repository_id,
                     session_id=payload.session_id,
                     role="assistant",
                     content=response["answer"],
@@ -238,6 +370,8 @@ async def query_code(request: Request, payload: QueryRequest):
             query_info=response['query_info'],
             processing_time=processing_time
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

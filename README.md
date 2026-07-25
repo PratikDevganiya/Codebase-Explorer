@@ -21,12 +21,13 @@ selected project.
 
 ## Features
 
-- Import public GitHub repositories, ZIP archives, and browser-selected folders
+- Import one or multiple public GitHub repositories, ZIP archives, and
+  browser-selected folders in one attachment batch
 - Automatically detect the programming language of each file
 - Ignore common generated content such as `.git`, virtual environments,
   `node_modules`, build output, and caches
 - Parse and split source code into searchable chunks
-- Ask project-specific questions in natural language
+- Ask natural-language questions about one project or a selected project group
 - Retrieve code semantically instead of relying only on keyword matching
 - Display related files and line ranges with each answer
 - Browse an expandable VS Code-style project tree and inspect source files
@@ -233,6 +234,20 @@ SUPABASE_SECRET_KEY=your_backend_only_secret_key
 CORS_ORIGINS=http://localhost:3000
 ```
 
+To enable the optional single-user login, also set:
+
+```dotenv
+ADMIN_USERNAME=your_private_id
+ADMIN_PASSWORD=use_a_long_unique_password
+AUTH_SECRET=generate_with_openssl_rand_hex_32
+AUTH_TOKEN_HOURS=12
+```
+
+Generate the signing secret with `openssl rand -hex 32`. Authentication is
+enabled only when `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `AUTH_SECRET` are all
+present. Credentials stay in the backend environment; React receives only a
+short-lived signed access token.
+
 The defaults use:
 
 ```dotenv
@@ -334,8 +349,8 @@ npm run typecheck
 npm run build
 ```
 
-At the time of this README update, the backend suite contains **55 passing
-tests** with approximately **66% statement coverage**. GitHub Actions runs the
+At the time of this README update, the backend suite contains **59 passing
+tests** with approximately **67% statement coverage**. GitHub Actions runs the
 suite with Python 3.12. Test counts and coverage can change as the project
 evolves; the workflow result is the authoritative status.
 
@@ -355,6 +370,9 @@ GEMINI_API_KEY
 SUPABASE_URL
 SUPABASE_SECRET_KEY
 CORS_ORIGINS=https://your-frontend.onrender.com
+ADMIN_USERNAME=your_private_id
+ADMIN_PASSWORD=use_a_long_unique_password
+AUTH_SECRET=generated_secret_value
 ```
 
 Frontend:
@@ -401,7 +419,8 @@ authentication.
 
 ## Known limitations
 
-- There is no user authentication or tenant-level authorization yet.
+- The optional login supports one administrator account; multi-user accounts
+  and tenant-level authorization are not implemented.
 - Render Free services can sleep and may have a cold-start delay.
 - Gemini and Supabase free tiers impose request, storage, and compute limits.
 - Ingestion currently runs in the API request rather than a background job
@@ -416,7 +435,7 @@ authentication.
 
 ## Future improvements
 
-- Add authentication, per-user ownership, and Supabase RLS policies
+- Add multi-user authentication, per-user ownership, and Supabase RLS policies
 - Move ingestion to background workers with progress events and retries
 - Add hybrid keyword/vector retrieval and a reranking stage
 - Add evaluation datasets for retrieval quality and answer faithfulness
@@ -433,8 +452,11 @@ authentication.
   environment.
 - Only `VITE_API_URL` is safe to expose to the browser.
 - The Supabase source bucket is private.
-- For a multi-user production release, add authentication, ownership checks,
-  and restrictive Row Level Security policies before accepting sensitive code.
+- The single-user login protects every application API except the public
+  health and login endpoints when its three required environment variables are
+  configured.
+- For a multi-user production release, add per-user ownership checks and
+  restrictive Row Level Security policies before accepting sensitive code.
 
 ## License
 

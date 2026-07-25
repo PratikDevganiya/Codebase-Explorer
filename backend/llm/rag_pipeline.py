@@ -44,6 +44,7 @@ class RAGPipeline:
         language: Optional[str] = None,
         include_context: bool = True,
         repository_id: Optional[str] = None,
+        repository_ids: Optional[List[str]] = None,
     ) -> Dict:
         """
         Process user query through complete RAG pipeline.
@@ -68,12 +69,16 @@ class RAGPipeline:
             filters["language"] = language
         if repository_id:
             filters["repository_id"] = repository_id
+        selected_repository_ids = list(dict.fromkeys(repository_ids or []))
+        if repository_id and repository_id not in selected_repository_ids:
+            selected_repository_ids.insert(0, repository_id)
 
         search_results = self.search_engine.search(
             query=parsed_query["enhanced_query"],
             language=filters.get("language"),
             code_type=filters.get("type"),
             repository_id=filters.get("repository_id"),
+            repository_ids=selected_repository_ids or None,
         )
 
         logger.info(f"Retrieved {len(search_results)} code snippets")
@@ -102,6 +107,7 @@ class RAGPipeline:
                 "original": user_query,
                 "intent": parsed_query["intent"],
                 "filters_applied": filters,
+                "repository_ids": selected_repository_ids,
             },
             "num_sources": len(search_results),
         }
@@ -164,6 +170,8 @@ class RAGPipeline:
                 "lines": f"{result.get('start_line', '?')}-{result.get('end_line', '?')}",
                 "language": result.get("language", "N/A"),
                 "relevance": result.get("score", 0),
+                "repository_id": result.get("repository_id"),
+                "repository_name": result.get("repository_name"),
             }
             sources.append(source)
 

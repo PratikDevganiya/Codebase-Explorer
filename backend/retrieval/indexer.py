@@ -58,7 +58,15 @@ class Indexer:
             texts, batch_size=batch_size
         )
 
-        # Filter out failed embeddings
+        failed_count = sum(embedding is None for embedding in embeddings)
+        if failed_count:
+            raise RuntimeError(
+                f"Embedding generation failed for {failed_count} of "
+                f"{len(chunks)} chunks; nothing was indexed. "
+                "Wait for the embedding quota to reset and try again."
+            )
+
+        # Keep the defensive filter for custom embedding providers.
         valid_data = [
             (emb, meta, id_)
             for emb, meta, id_ in zip(embeddings, metadatas, ids)

@@ -75,17 +75,59 @@ class MultiStageRetriever:
 
         return expanded[: self.top_n]
 
+    def retrieve_across_repositories(
+        self,
+        query: str,
+        repository_ids: List[str],
+        filters: Optional[Dict] = None,
+        context_window: int = 3,
+    ) -> List[Dict]:
+        """Retrieve and globally rerank candidates from several projects."""
+        if not repository_ids:
+            return self.retrieve(query, filters, context_window)
+
+        query_embedding = self.embedding_generator.generate_embedding(query)
+        if not query_embedding:
+            logger.error("Failed to generate query embedding")
+            return []
+
+        candidates: List[Dict] = []
+        base_filters = dict(filters or {})
+        for repository_id in dict.fromkeys(repository_ids):
+            project_filters = {
+                **base_filters,
+                "repository_id": repository_id,
+            }
+            candidates.extend(
+                self.vector_store.search(
+                    query_vector=query_embedding,
+                    k=self.top_k,
+                    filter_dict=project_filters,
+                )
+            )
+
+        if not candidates:
+            logger.warning("No candidates found in selected repositories")
+            return []
+
+        reranked = self._rerank_results(query, candidates)
+        diversified = self._diversify_files(reranked)
+        expanded = self._expand_context(diversified, context_window)
+        return expanded[: self.top_n]
+
     def _diversify_files(self, results: List[Dict]) -> List[Dict]:
         """Prefer distinct files so one large file cannot consume all context."""
         selected = []
         seen_paths = set()
 
         for result in results:
-            file_path = result.get("metadata", {}).get("file_path")
-            if file_path and file_path in seen_paths:
+            metadata = result.get("metadata", {})
+            file_path = metadata.get("file_path")
+            file_identity = (metadata.get("repository_id"), file_path)
+            if file_path and file_identity in seen_paths:
                 continue
             if file_path:
-                seen_paths.add(file_path)
+                seen_paths.add(file_identity)
             selected.append(result)
 
         return selected

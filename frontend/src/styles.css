@@ -12,6 +12,21 @@ body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 
+.auth-loading { min-height: 100vh; display: grid; place-items: center; color: #60756a; font-weight: 600; }
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top, #e6f3e9, #f3f5f1 48%); }
+.login-card { width: min(100%, 390px); padding: 38px; border: 1px solid #d8e1da; border-radius: 18px; background: white; box-shadow: 0 22px 60px #19332618; }
+.login-brand { width: fit-content; margin-bottom: 34px; padding: 12px 14px; border-radius: 10px; background: #13231d; font-size: 20px; }
+.login-card h1 { margin: 7px 0; font-size: 30px; letter-spacing: -.04em; }
+.login-description { margin: 0 0 25px; color: #738078; font-size: 13px; line-height: 1.6; }
+.login-card form { display: grid; gap: 17px; }
+.login-card label { display: grid; gap: 7px; color: #34483e; font-size: 12px; font-weight: 700; }
+.login-card input { width: 100%; height: 46px; padding: 0 13px; border: 1px solid #ccd7d0; border-radius: 9px; outline: none; background: #fbfcfb; }
+.login-card input:focus { border-color: #57936b; box-shadow: 0 0 0 3px #72b4871c; }
+.login-card form > button { height: 46px; border: 0; border-radius: 9px; color: white; background: #183126; font-weight: 700; }
+.login-card form > button:disabled { cursor: not-allowed; opacity: .55; }
+.login-error { margin: -4px 0 0; color: #b84e47; font-size: 12px; }
+.logout-button { margin-left: 4px; color: #d2ddd7; }
+
 .app-shell { min-height: 100vh; }
 .topbar { position: sticky; z-index: 20; top: 0; height: 64px; padding: 0 max(32px, calc((100vw - 1440px) / 2)); display: flex; align-items: center; background: #13231d; color: #eef6f1; box-shadow: 0 1px 0 #2a3d34; }
 .brand { display: flex; align-items: center; flex: 0 0 auto; }
@@ -99,6 +114,13 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .text-button { border: 0; color: #688076; background: transparent; font-size: 12px; }
 .workspace-strip { min-height: 68px; padding: 11px 18px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #e9ece9; background: #fafcf9; }
 .workspace-strip select { width: auto; max-width: 220px; margin-left: auto; }
+.project-picker { position: relative; margin-left: auto; }
+.project-picker summary { padding: 8px 10px; list-style: none; cursor: pointer; border: 1px solid #d5dfd8; border-radius: 8px; color: #4e6758; background: white; font-size: 10px; font-weight: 700; }
+.project-picker summary::-webkit-details-marker { display: none; }
+.project-picker > div { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: 240px; max-height: 240px; padding: 7px; overflow-y: auto; border: 1px solid #d5dfd8; border-radius: 10px; background: white; box-shadow: 0 12px 28px rgba(20, 44, 31, .14); }
+.project-picker label { padding: 8px; display: flex; align-items: center; gap: 8px; border-radius: 7px; color: #344b3d; font-size: 11px; cursor: pointer; }
+.project-picker label:hover { background: #f0f7f2; }
+.project-picker input { width: 14px; height: 14px; accent-color: #3e7450; }
 .explorer-toggle { height: 34px; padding: 0 12px !important; margin-left: auto; color: #355d46 !important; border: 1px solid #c9dbcf !important; background: #edf7f0 !important; font-size: 10px; }
 .repository-chip { padding: 8px 10px; display: flex; gap: 10px; align-items: center; border: 1px solid #cce3d3; border-radius: 10px; background: #eef8f1; }
 .repository-chip > span { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 8px; color: #386b49; background: #d9f0e0; }
@@ -113,6 +135,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .attachment-tabs button.active { border-color: #315c43 !important; color: white !important; background: #1d3329 !important; }
 .attachment-fields { display: grid; grid-template-columns: 1fr 130px; gap: 9px; }
 .attachment-fields.upload-fields { grid-template-columns: 1fr 1fr; }
+.repository-url-input { min-height: 74px; padding: 11px 13px; resize: vertical; font: 11px/1.5 "DM Sans"; }
 .code-snippet-input { min-height: 180px; padding: 14px; resize: vertical; font: 12px/1.6 "DM Mono"; }
 .file-picker { height: 44px; padding: 0 13px; display: flex; align-items: center; overflow: hidden; border: 1px solid #d6ddd8; border-radius: 9px; color: #52675b; background: white; font-size: 11px; cursor: pointer; }
 .file-picker input { display: none; }
@@ -135,6 +158,7 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .source-links button { height: 28px; padding: 0 9px !important; display: inline-flex; align-items: center; gap: 5px; color: #356548 !important; border: 1px solid #cce0d2 !important; background: #f8fcf9 !important; font-size: 9px; font-weight: 700; }
 .source-links button:hover { border-color: #79aa88 !important; background: #edf7f0 !important; }
 .source-links small { color: #7a8b81; font-size: 8px; }
+.source-links em { padding: 2px 5px; border-radius: 4px; color: #426a50; background: #e7f3ea; font-size: 8px; font-style: normal; }
 .user .source-links { display: none; }
 .notice { margin: 0 0 18px; padding: 14px 17px; border-radius: 10px; font-size: 13px; }
 .notice.error { color: #8c332e; border: 1px solid #efc8c5; background: #fff1f0; }

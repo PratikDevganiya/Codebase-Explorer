@@ -8,6 +8,8 @@ export interface SourceReference {
   lines: string;
   language: string;
   relevance: number;
+  repository_id?: string;
+  repository_name?: string;
 }
 
 export interface QueryResponse {
@@ -84,4 +86,5 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   sources?: SourceReference[];
+  created_at?: string;
 }
