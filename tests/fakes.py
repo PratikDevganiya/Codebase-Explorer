@@ -108,3 +108,19 @@ class InMemorySourceStorage:
         for key in keys:
             del self.objects[key]
         return len(keys)
+
+
+class InMemoryConversationStore:
+    def __init__(self):
+        self.records = {}
+
+    def list(self):
+        return list(self.records.values())
+
+    def update(self, conversation_id, **updates):
+        if conversation_id in self.records:
+            self.records[conversation_id].update(updates)
+        return self.records.get(conversation_id)
+
+    def delete(self, conversation_id):
+        return self.records.pop(conversation_id, None)

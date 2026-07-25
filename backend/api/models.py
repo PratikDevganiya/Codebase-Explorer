@@ -41,6 +41,9 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = Field(
         None, description="Anonymous browser session used for chat persistence"
     )
+    conversation_id: Optional[str] = Field(
+        None, description="Named conversation used for persistent chat history"
+    )
 
 
 class SourceReference(BaseModel):
@@ -72,6 +75,11 @@ class IngestRequest(BaseModel):
 
     repo_url: str = Field(..., description="GitHub repository URL")
     branch: Optional[str] = Field("main", description="Branch to clone")
+    operation_id: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Client-generated identifier used to report ingestion progress",
+    )
     extensions: Optional[List[str]] = Field(
         None, description="File extensions to index"
     )
@@ -123,6 +131,29 @@ class ChatMessageRecord(BaseModel):
     content: str
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     created_at: str
+    conversation_id: Optional[str] = None
+
+
+class ConversationCreate(BaseModel):
+    repository_ids: List[str] = Field(..., min_length=1, max_length=10)
+    title: str = Field("New chat", min_length=1, max_length=120)
+
+
+class ConversationUpdate(BaseModel):
+    repository_ids: Optional[List[str]] = Field(
+        None,
+        min_length=1,
+        max_length=10,
+    )
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+
+
+class ConversationRecord(BaseModel):
+    id: str
+    title: str
+    repository_ids: List[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
 
 
 class ExplainRequest(BaseModel):

@@ -3,6 +3,7 @@ FastAPI Application - Production Ready with Real LLM
 """
 
 import hashlib
+import asyncio
 import base64
 import binascii
 import hmac
@@ -19,13 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from typing import Dict
+from typing import Callable, Dict, Optional
 
 from backend.api.models import (
     QueryRequest, QueryResponse, IngestRequest, IngestResponse,
     ExplainRequest, ExplainResponse, DebugRequest, DebugResponse,
     HealthResponse, RepositoryFile, RepositoryFileContent, RepositoryRecord,
     SourceReference, ChatMessageRecord, LoginRequest, LoginResponse,
+    ConversationCreate, ConversationUpdate, ConversationRecord,
 )
 from backend.ingestion.github_loader import GitHubLoader
 from backend.ingestion.document_loader import DocumentLoader
@@ -48,6 +50,7 @@ from backend.llm.rag_pipeline import RAGPipeline
 from backend.llm.llm_client import MockLLMClient, GeminiClient, OpenAIClient
 from backend.storage import (
     SupabaseChatRepository,
+    SupabaseConversationRepository,
     SupabaseRepositoryMetadataStore,
     SupabaseSourceStorage,
 )
@@ -86,6 +89,24 @@ reindex_required = False
 repository_registry = SupabaseRepositoryMetadataStore()
 source_storage = SupabaseSourceStorage()
 chat_repository = SupabaseChatRepository()
+conversation_repository = SupabaseConversationRepository()
+ingestion_progress: Dict[str, Dict] = {}
+
+
+def _set_ingestion_progress(
+    operation_id: str,
+    stage: str,
+    progress: int,
+    message: str,
+) -> None:
+    if not operation_id:
+        return
+    ingestion_progress[operation_id] = {
+        "stage": stage,
+        "progress": progress,
+        "message": message,
+        "updated_at": time.time(),
+    }
 
 
 def _encode_token(username: str) -> str:
@@ -327,6 +348,17 @@ async def query_code(request: Request, payload: QueryRequest):
                 status_code=400,
                 detail="A query can include at most 10 projects",
             )
+        if payload.conversation_id:
+            conversation = conversation_repository.get(payload.conversation_id)
+            if not conversation:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            if not repository_ids:
+                repository_ids = conversation["repository_ids"]
+            if repository_ids != conversation["repository_ids"]:
+                conversation_repository.update(
+                    payload.conversation_id,
+                    repository_ids=repository_ids,
+                )
 
         response = rag_pipeline.query(
             user_query=payload.query,
@@ -350,6 +382,7 @@ async def query_code(request: Request, payload: QueryRequest):
                     session_id=payload.session_id,
                     role="user",
                     content=payload.query,
+                    conversation_id=payload.conversation_id,
                 )
                 chat_repository.append(
                     repository_id=chat_repository_id,
@@ -357,7 +390,10 @@ async def query_code(request: Request, payload: QueryRequest):
                     role="assistant",
                     content=response["answer"],
                     sources=response["sources"],
+                    conversation_id=payload.conversation_id,
                 )
+                if payload.conversation_id:
+                    conversation_repository.touch(payload.conversation_id)
             except Exception as persistence_error:
                 logger.warning(
                     f"Could not persist chat history: {persistence_error}"
@@ -384,6 +420,7 @@ def index_repository_path(
     source_type: str,
     source: str,
     extensions=None,
+    progress_callback: Optional[Callable[[str, int, str], None]] = None,
 ) -> IngestResponse:
     """Run the shared file-to-vector ingestion pipeline."""
     global reindex_required
@@ -399,6 +436,8 @@ def index_repository_path(
         "chunks_indexed": 0,
     })
 
+    report = progress_callback or (lambda _stage, _progress, _message: None)
+    report("reading", 20, "Reading source files")
     doc_loader = DocumentLoader()
     selected_extensions = extensions or list(doc_loader.supported_extensions)
     filenames = list(doc_loader.supported_filenames) if extensions is None else None
@@ -407,8 +446,10 @@ def index_repository_path(
         extensions=selected_extensions,
         filenames=filenames,
     )
+    report("detecting", 35, "Detecting file languages")
     documents = doc_loader.load_files(files, show_progress=False)
 
+    report("chunking", 50, "Parsing and creating code chunks")
     chunker = CodeChunker(
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
@@ -438,10 +479,12 @@ def index_repository_path(
     if not all_chunks:
         raise ValueError("No supported source files were found")
 
+    report("embedding", 70, "Generating embeddings")
     indexed_count = indexer.index_chunks(all_chunks, batch_size=32)
     if indexed_count == 0:
         raise ValueError("No source chunks could be indexed")
 
+    report("saving", 90, "Saving vectors and source files")
     reindex_required = False
     source_storage.upload_files(repository_id, repo_path, files)
     repository_registry.upsert({
@@ -456,6 +499,7 @@ def index_repository_path(
         "storage_prefix": repository_id,
     })
     shutil.rmtree(repo_path, ignore_errors=True)
+    report("ready", 100, "Ready to chat")
     return IngestResponse(
         status="success",
         message=f"Repository {display_name} ingested successfully",
@@ -473,6 +517,17 @@ async def list_repositories():
     return repository_registry.list()
 
 
+@app.get("/ingestion-progress/{operation_id}")
+async def get_ingestion_progress(operation_id: str):
+    """Return the latest server-reported stage for an active ingestion."""
+    return ingestion_progress.get(operation_id, {
+        "stage": "uploading",
+        "progress": 5,
+        "message": "Uploading files",
+        "updated_at": time.time(),
+    })
+
+
 @app.delete("/repositories/{repository_id}")
 async def delete_repository(repository_id: str):
     """Permanently delete a project and all of its cloud data."""
@@ -481,6 +536,28 @@ async def delete_repository(repository_id: str):
         raise HTTPException(status_code=404, detail="Repository not found")
 
     try:
+        affected_conversations = [
+            conversation
+            for conversation in conversation_repository.list()
+            if repository_id in conversation["repository_ids"]
+        ]
+        for conversation in affected_conversations:
+            remaining_projects = [
+                project_id
+                for project_id in conversation["repository_ids"]
+                if project_id != repository_id
+            ]
+            if remaining_projects:
+                chat_repository.reassign_conversation_repository(
+                    conversation["id"],
+                    remaining_projects[0],
+                )
+                conversation_repository.update(
+                    conversation["id"],
+                    repository_ids=remaining_projects,
+                )
+            else:
+                conversation_repository.delete(conversation["id"])
         deleted_files = source_storage.delete_repository(repository_id)
         deleted = repository_registry.delete(repository_id)
         if deleted is None:
@@ -499,6 +576,77 @@ async def delete_repository(repository_id: str):
             status_code=500,
             detail="Could not completely delete the project. Please try again.",
         )
+
+
+@app.get("/conversations", response_model=list[ConversationRecord])
+async def list_conversations():
+    return conversation_repository.list()
+
+
+@app.post("/conversations", response_model=ConversationRecord)
+async def create_conversation(payload: ConversationCreate):
+    missing = [
+        repository_id
+        for repository_id in payload.repository_ids
+        if repository_registry.get(repository_id) is None
+    ]
+    if missing:
+        raise HTTPException(status_code=404, detail="One or more projects were not found")
+    return conversation_repository.create(
+        payload.repository_ids,
+        payload.title,
+    )
+
+
+@app.patch("/conversations/{conversation_id}", response_model=ConversationRecord)
+async def update_conversation(
+    conversation_id: str,
+    payload: ConversationUpdate,
+):
+    if conversation_repository.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if payload.repository_ids is not None:
+        missing = [
+            repository_id
+            for repository_id in payload.repository_ids
+            if repository_registry.get(repository_id) is None
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail="One or more projects were not found",
+            )
+    return conversation_repository.update(
+        conversation_id,
+        title=payload.title,
+        repository_ids=payload.repository_ids,
+    )
+
+
+@app.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    if conversation_repository.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation_repository.delete(conversation_id)
+    return {"status": "deleted", "conversation_id": conversation_id}
+
+
+@app.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=list[ChatMessageRecord],
+)
+async def list_conversation_messages(conversation_id: str):
+    if conversation_repository.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return chat_repository.list_conversation(conversation_id)
+
+
+@app.delete("/conversations/{conversation_id}/messages")
+async def clear_conversation_messages(conversation_id: str):
+    if conversation_repository.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    chat_repository.clear_conversation(conversation_id)
+    return {"status": "cleared"}
 
 
 @app.get(
@@ -579,24 +727,41 @@ async def ingest_repository(
         raise HTTPException(status_code=503, detail="System not initialized")
 
     repo_path = None
+    operation_id = (payload.operation_id or "")[:100]
     try:
         repository_id = create_repository_id()
         display_name = payload.repo_url.rstrip("/").split("/")[-1].replace(".git", "")
         loader = GitHubLoader()
-        repo_path = loader.clone_repository(
-            repo_url=payload.repo_url,
-            repo_name=f"{display_name}-{repository_id[5:13]}",
-            branch=payload.branch,
+        _set_ingestion_progress(
+            operation_id,
+            "cloning",
+            10,
+            "Cloning repository",
         )
-        return index_repository_path(
-            repo_path=repo_path,
-            repository_id=repository_id,
-            display_name=display_name,
-            source_type="github",
-            source=payload.repo_url,
-            extensions=payload.extensions,
+        repo_path = await asyncio.to_thread(
+            loader.clone_repository,
+            payload.repo_url,
+            f"{display_name}-{repository_id[5:13]}",
+            payload.branch,
+        )
+        report = lambda stage, progress, message: _set_ingestion_progress(
+            operation_id,
+            stage,
+            progress,
+            message,
+        )
+        return await asyncio.to_thread(
+            index_repository_path,
+            repo_path,
+            repository_id,
+            display_name,
+            "github",
+            payload.repo_url,
+            payload.extensions,
+            report,
         )
     except Exception as e:
+        _set_ingestion_progress(operation_id, "failed", 100, str(e))
         if repo_path and repo_path.exists():
             shutil.rmtree(repo_path, ignore_errors=True)
         logger.error(f"Ingestion failed: {e}")
@@ -612,6 +777,7 @@ async def ingest_upload(request: Request):
 
     repository_id = create_repository_id()
     destination = settings.uploads_path / repository_id
+    operation_id = ""
     try:
         async with request.form(
             max_files=MAX_FILES,
@@ -621,6 +787,7 @@ async def ingest_upload(request: Request):
             upload_type = str(form.get("upload_type", ""))
             display_name = str(form.get("display_name", "")).strip()
             relative_paths = str(form.get("relative_paths", "[]"))
+            operation_id = str(form.get("operation_id", "")).strip()[:100]
             files = [
                 item for item in form.getlist("files")
                 if hasattr(item, "filename") and hasattr(item, "file")
@@ -637,27 +804,45 @@ async def ingest_upload(request: Request):
                 if len(files) != 1 or not files[0].filename.lower().endswith(".zip"):
                     raise ValueError("Select exactly one ZIP file")
                 extract_zip_safely(files[0].file, destination)
+                source_name = files[0].filename
             else:
                 paths = json.loads(relative_paths)
                 if not isinstance(paths, list) or len(paths) != len(files):
                     raise ValueError("Folder paths do not match uploaded files")
+                root_names = list(dict.fromkeys(
+                    Path(str(path).replace("\\", "/")).parts[0]
+                    for path in paths
+                    if Path(str(path).replace("\\", "/")).parts
+                ))
+                source_name = " + ".join(root_names[:10]) or "Local folder"
                 save_folder_upload(
                     destination,
                     ((path, upload.file) for path, upload in zip(paths, files)),
                 )
 
-            return index_repository_path(
-                repo_path=destination,
-                repository_id=repository_id,
-                display_name=display_name,
-                source_type=upload_type,
-                source=files[0].filename if upload_type == "zip" else "Local folder",
+            report = lambda stage, progress, message: _set_ingestion_progress(
+                operation_id,
+                stage,
+                progress,
+                message,
+            )
+            return await asyncio.to_thread(
+                index_repository_path,
+                destination,
+                repository_id,
+                display_name,
+                upload_type,
+                source_name,
+                None,
+                report,
             )
     except (ValueError, json.JSONDecodeError) as e:
+        _set_ingestion_progress(operation_id, "failed", 100, str(e))
         if destination.exists():
             shutil.rmtree(destination)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _set_ingestion_progress(operation_id, "failed", 100, str(e))
         if destination.exists():
             shutil.rmtree(destination)
         logger.error(f"Upload ingestion failed: {e}")

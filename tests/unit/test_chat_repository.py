@@ -23,6 +23,11 @@ class FakeChatQuery:
         self.operation = "delete"
         return self
 
+    def update(self, payload):
+        self.operation = "update"
+        self.payload = payload
+        return self
+
     def eq(self, field, value):
         self.filters[field] = value
         return self
@@ -48,6 +53,9 @@ class FakeChatQuery:
             self.client.rows = [
                 row for row in self.client.rows if row not in matching
             ]
+        if self.operation == "update":
+            for row in matching:
+                row.update(self.payload)
         return SimpleNamespace(data=matching)
 
 
@@ -91,3 +99,25 @@ def test_chat_history_is_scoped_and_clearable():
         "repo_1",
         "00000000-0000-0000-0000-000000000001",
     ) == []
+
+
+def test_chat_history_can_be_scoped_to_a_named_conversation():
+    repository = SupabaseChatRepository(FakeChatClient())
+    repository.append(
+        repository_id="repo_1",
+        session_id="00000000-0000-0000-0000-000000000001",
+        conversation_id="conversation-1",
+        role="user",
+        content="Explain authentication",
+    )
+
+    messages = repository.list_conversation("conversation-1")
+    assert [message["content"] for message in messages] == [
+        "Explain authentication"
+    ]
+
+    repository.reassign_conversation_repository("conversation-1", "repo_2")
+    assert repository.list_conversation("conversation-1")[0]["repository_id"] == "repo_2"
+
+    repository.clear_conversation("conversation-1")
+    assert repository.list_conversation("conversation-1") == []

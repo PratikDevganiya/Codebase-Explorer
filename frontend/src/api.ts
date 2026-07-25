@@ -1,8 +1,10 @@
 import type {
   ChatMessage,
+  ConversationRecord,
   ExplainResponse,
   HealthResponse,
   IngestResponse,
+  IngestionProgress,
   QueryResponse,
   RepositoryFile,
   RepositoryFileContent,
@@ -84,6 +86,7 @@ export const api = {
     query: string,
     repositoryIds: string[] = [],
     sessionId?: string,
+    conversationId?: string,
   ) =>
     request<QueryResponse>("/query", {
       method: "POST",
@@ -92,10 +95,48 @@ export const api = {
         repository_id: repositoryIds[0] || null,
         repository_ids: repositoryIds,
         session_id: sessionId || null,
+        conversation_id: conversationId || null,
         top_k: 5,
         include_context: true,
       }),
     }),
+  conversations: (signal?: AbortSignal) =>
+    request<ConversationRecord[]>("/conversations", { signal }),
+  createConversation: (repositoryIds: string[], title = "New chat") =>
+    request<ConversationRecord>("/conversations", {
+      method: "POST",
+      body: JSON.stringify({
+        repository_ids: repositoryIds,
+        title,
+      }),
+    }),
+  updateConversation: (
+    conversationId: string,
+    updates: { title?: string; repository_ids?: string[] },
+  ) => request<ConversationRecord>(
+    `/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    },
+  ),
+  deleteConversation: (conversationId: string) =>
+    request<{ status: string; conversation_id: string }>(
+      `/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    ),
+  conversationMessages: (
+    conversationId: string,
+    signal?: AbortSignal,
+  ) => request<ChatMessage[]>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { signal },
+  ),
+  clearConversationMessages: (conversationId: string) =>
+    request<{ status: string }>(
+      `/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { method: "DELETE" },
+    ),
   chatMessages: (
     repositoryId: string,
     sessionId: string,
@@ -109,15 +150,47 @@ export const api = {
       `/repositories/${encodeURIComponent(repositoryId)}/messages?session_id=${encodeURIComponent(sessionId)}`,
       { method: "DELETE" },
     ),
-  ingest: (repoUrl: string, branch: string) =>
-    request<IngestResponse>("/repositories/github", {
-      method: "POST",
-      body: JSON.stringify({ repo_url: repoUrl, branch }),
-    }),
+  ingest: async (
+    repoUrl: string,
+    branch: string,
+    onProgress?: (progress: IngestionProgress) => void,
+  ) => {
+    const operationId = crypto.randomUUID();
+    let polling = true;
+    const pollProgress = async () => {
+      while (polling) {
+        try {
+          const progress = await request<IngestionProgress>(
+            `/ingestion-progress/${encodeURIComponent(operationId)}`,
+          );
+          onProgress?.(progress);
+          if (progress.stage === "ready" || progress.stage === "failed") break;
+        } catch {
+          // The ingestion request below reports terminal errors.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+      }
+    };
+    const progressTask = pollProgress();
+    try {
+      return await request<IngestResponse>("/repositories/github", {
+        method: "POST",
+        body: JSON.stringify({
+          repo_url: repoUrl,
+          branch,
+          operation_id: operationId,
+        }),
+      });
+    } finally {
+      polling = false;
+      await progressTask;
+    }
+  },
   uploadProject: async (
     uploadType: "zip" | "folder",
     name: string,
     files: File[],
+    onProgress?: (progress: IngestionProgress) => void,
   ) => {
     const ignoredDirectories = new Set([
       ".git", ".idea", ".next", ".pytest_cache", ".venv", ".vscode",
@@ -142,8 +215,10 @@ export const api = {
       throw new Error("This project still contains more than 2,000 files after excluding generated folders.");
     }
     const form = new FormData();
+    const operationId = crypto.randomUUID();
     form.append("upload_type", uploadType);
     form.append("display_name", name);
+    form.append("operation_id", operationId);
     form.append(
       "relative_paths",
       JSON.stringify(uploadFiles.map((file) => (
@@ -153,13 +228,35 @@ export const api = {
       ))),
     );
     uploadFiles.forEach((file) => form.append("files", file));
-    const response = await fetch(`${API_URL}/repositories/upload`, {
-      method: "POST",
-      headers: authToken.get()
-        ? { Authorization: `Bearer ${authToken.get()}` }
-        : undefined,
-      body: form,
-    });
+    let polling = true;
+    const pollProgress = async () => {
+      while (polling) {
+        try {
+          const progress = await request<IngestionProgress>(
+            `/ingestion-progress/${encodeURIComponent(operationId)}`,
+          );
+          onProgress?.(progress);
+          if (progress.stage === "ready" || progress.stage === "failed") break;
+        } catch {
+          // The upload request below reports terminal errors.
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+      }
+    };
+    const progressTask = pollProgress();
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}/repositories/upload`, {
+        method: "POST",
+        headers: authToken.get()
+          ? { Authorization: `Bearer ${authToken.get()}` }
+          : undefined,
+        body: form,
+      });
+    } finally {
+      polling = false;
+      await progressTask;
+    }
     if (!response.ok) {
       if (response.status === 401) {
         authToken.clear();

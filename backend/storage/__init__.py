@@ -1,4 +1,5 @@
 from backend.storage.chat_repository import SupabaseChatRepository
+from backend.storage.conversation_repository import SupabaseConversationRepository
 from backend.storage.project_repository import (
     ProjectNotFoundError,
     SupabaseProjectRepository,
@@ -18,6 +19,7 @@ __all__ = [
     "SupabaseRepositoryMetadataStore",
     "StoredSourceFile",
     "SupabaseChatRepository",
+    "SupabaseConversationRepository",
     "SupabaseSourceStorage",
     "get_supabase_client",
 ]

@@ -1,7 +1,15 @@
-import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  FormEvent,
+  type MouseEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { api, authToken } from "./api";
 import type {
   ChatMessage,
+  ConversationRecord,
   HealthResponse,
   IngestResponse,
   Page,
@@ -16,6 +24,25 @@ const nav: { id: Page; label: string; icon: Page }[] = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
 ];
+
+type IndexPhase = "" | "uploading" | "cloning" | "reading" | "detecting"
+  | "chunking" | "embedding" | "saving" | "indexing" | "analyzing"
+  | "ready" | "failed";
+
+const indexPhaseLabels: Record<IndexPhase, string> = {
+  "": "",
+  uploading: "Uploading files",
+  cloning: "Cloning repository",
+  reading: "Reading source files",
+  detecting: "Detecting languages",
+  chunking: "Parsing and creating chunks",
+  embedding: "Generating embeddings",
+  saving: "Saving to vector database",
+  indexing: "Indexing",
+  analyzing: "Analyzing code",
+  ready: "Ready to chat",
+  failed: "Indexing failed",
+};
 
 function NavigationIcon({ name }: { name: Page }) {
   if (name === "chat") {
@@ -47,6 +74,48 @@ function useStoredState<T>(key: string, initial: T) {
   });
   useEffect(() => localStorage.setItem(key, JSON.stringify(value)), [key, value]);
   return [value, setValue] as const;
+}
+
+type SidebarIconName =
+  | "chat"
+  | "chevron"
+  | "collapse"
+  | "folder"
+  | "menu"
+  | "plus"
+  | "trash";
+
+function SidebarIcon({ name }: { name: SidebarIconName }) {
+  const paths: Record<SidebarIconName, ReactNode> = {
+    chat: (
+      <>
+        <path d="M5 5.5h14v10H9l-4 3v-13Z" />
+        <path d="M8.5 9h7M8.5 12h4.5" />
+      </>
+    ),
+    chevron: <path d="m9 6 6 6-6 6" />,
+    collapse: <path d="m14.5 6-6 6 6 6" />,
+    folder: (
+      <path d="M3.5 7.5h6l1.8 2H20.5l-1.7 8H5.2l-1.7-10Z" />
+    ),
+    menu: (
+      <>
+        <path d="M5 7h14M5 12h14M5 17h14" />
+      </>
+    ),
+    plus: <path d="M12 5v14M5 12h14" />,
+    trash: (
+      <>
+        <path d="M7 8h10l-.7 11H7.7L7 8Z" />
+        <path d="M5.5 8h13M9 8V5.5h6V8M10 11v5M14 11v5" />
+      </>
+    ),
+  };
+  return (
+    <svg className="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+      {paths[name]}
+    </svg>
+  );
 }
 
 function ErrorNotice({ message }: { message: string }) {
@@ -207,6 +276,18 @@ function resolveSourcePath(files: RepositoryFile[], source: SourceReference) {
   ))?.path || files.find((file) => file.name === source.file)?.path;
 }
 
+function repositorySubtitle(repository: RepositoryRecord) {
+  const sourceName = repository.source?.trim();
+  const hasDistinctFolderName = repository.source_type === "folder"
+    && sourceName
+    && sourceName.toLowerCase() !== "local folder"
+    && sourceName.toLowerCase() !== repository.name.toLowerCase();
+  if (hasDistinctFolderName) {
+    return `${sourceName} · ${repository.status}`;
+  }
+  return `${repository.source_type} · ${repository.status}`;
+}
+
 type FileTreeNode = {
   name: string;
   path: string;
@@ -279,21 +360,27 @@ function FileTreeIcon() {
 }
 
 function CodeExplorer({
+  projects,
+  selectedRepositoryId,
   files,
   selectedPath,
   fileContent,
   highlight,
   loading,
   error,
+  onSelectRepository,
   onSelect,
   onClose,
 }: {
+  projects: RepositoryRecord[];
+  selectedRepositoryId: string;
   files: RepositoryFile[];
   selectedPath: string;
   fileContent: RepositoryFileContent | null;
   highlight: { start: number; end: number } | null;
   loading: boolean;
   error: string;
+  onSelectRepository: (repositoryId: string) => void;
   onSelect: (path: string) => void;
   onClose: () => void;
 }) {
@@ -370,12 +457,31 @@ function CodeExplorer({
   return (
     <section className="code-explorer panel" aria-label="Repository code explorer">
       <div className="explorer-toolbar">
-        <div><strong>Explorer</strong><span>{files.length} source files</span></div>
+        <div>
+          <strong>Explorer</strong>
+          <span>{projects.length} project{projects.length === 1 ? "" : "s"} · {files.length} source files</span>
+        </div>
         <button className="text-button" onClick={onClose}>Close</button>
       </div>
       <div className="explorer-body">
         <aside className="file-tree">
-          {renderTree(tree)}
+          {projects.map((project) => {
+            const expanded = project.repository_id === selectedRepositoryId;
+            return (
+              <div className="tree-node project-root" key={project.repository_id}>
+                <button
+                  className={expanded ? "folder-row project-root-row active" : "folder-row project-root-row"}
+                  onClick={() => onSelectRepository(project.repository_id)}
+                  title={project.name}
+                >
+                  <span className={expanded ? "tree-arrow expanded" : "tree-arrow"}>›</span>
+                  <FolderTreeIcon open={expanded} />
+                  <strong>{project.name}</strong>
+                </button>
+                {expanded && renderTree(tree, 1)}
+              </div>
+            );
+          })}
         </aside>
         <div className="code-viewer">
           <div className="file-tab">
@@ -648,6 +754,13 @@ function ChatPage({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [repositories, setRepositories] = useState<RepositoryRecord[]>([]);
+  const [conversations, setConversations] = useState<ConversationRecord[]>([]);
+  const [activeConversationId, setActiveConversationId] = useStoredState(
+    "codebase-active-conversation",
+    "",
+  );
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [expandedProjectId, setExpandedProjectId] = useState("");
   const [selectedId, setSelectedId] = useStoredState("rag-active-repository", "");
   const [selectedIds, setSelectedIds] = useStoredState<string[]>(
     "rag-selected-repositories",
@@ -657,11 +770,12 @@ function ChatPage({
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachType, setAttachType] = useState<"github" | "zip" | "folder" | "code">("github");
   const [projectName, setProjectName] = useState("");
+  const [projectNameEdited, setProjectNameEdited] = useState(false);
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("main");
   const [codeSnippet, setCodeSnippet] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [phase, setPhase] = useState<"" | "uploading" | "cloning" | "indexing" | "analyzing" | "ready">("");
+  const [phase, setPhase] = useState<IndexPhase>("");
   const [explorerOpen, setExplorerOpen] = useState(false);
   const [explorerRepositoryId, setExplorerRepositoryId] = useState("");
   const [repositoryFiles, setRepositoryFiles] = useState<RepositoryFile[]>([]);
@@ -691,13 +805,44 @@ function ChatPage({
     }
   };
 
+  const loadConversations = async (preferredId?: string) => {
+    try {
+      const records = await api.conversations();
+      setConversations(records);
+      const requestedId = preferredId === undefined
+        ? activeConversationId
+        : preferredId;
+      if (
+        requestedId
+        && !records.some((conversation) => conversation.id === requestedId)
+      ) {
+        setActiveConversationId("");
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
+  };
+
   useEffect(() => {
     loadRepositories();
+    loadConversations();
   }, []);
 
   const selectedIdsKey = selectedIds.join(",");
 
   useEffect(() => {
+    if (activeConversationId) {
+      const controller = new AbortController();
+      setMessages([]);
+      api.conversationMessages(activeConversationId, controller.signal)
+        .then((storedMessages) => setMessages(storedMessages))
+        .catch((requestError) => {
+          if ((requestError as Error).name !== "AbortError") {
+            setError((requestError as Error).message);
+          }
+        });
+      return () => controller.abort();
+    }
     if (!selectedIds.length) {
       setMessages([]);
       return;
@@ -723,14 +868,25 @@ function ChatPage({
         if ((requestError as Error).name !== "AbortError") {
           setError((requestError as Error).message);
         }
-      });
+    });
     return () => controller.abort();
-  }, [selectedIdsKey, sessionId]);
+  }, [activeConversationId, selectedIdsKey, sessionId]);
 
   useEffect(() => {
     folderInput.current?.setAttribute("webkitdirectory", "");
     folderInput.current?.setAttribute("directory", "");
   }, [attachType]);
+
+  useEffect(() => {
+    if (!attachOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !phase) {
+        setAttachOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [attachOpen, phase]);
 
   useEffect(() => {
     const repositoryId = explorerRepositoryId || selectedId;
@@ -774,7 +930,8 @@ function ChatPage({
     setMessages(nextMessages);
   };
 
-  const selectRepository = (repositoryId: string) => {
+  const startProjectChat = (repositoryId: string) => {
+    setActiveConversationId("");
     setSelectedId(repositoryId);
     setSelectedIds(repositoryId ? [repositoryId] : []);
     setMessages([]);
@@ -783,31 +940,53 @@ function ChatPage({
     setSelectedPath("");
     setHighlight(null);
     setExplorerRepositoryId(repositoryId);
+    setAttachOpen(false);
   };
 
-  const setProjectSelection = (repositoryIds: string[]) => {
+  const openProjectDetails = (repositoryId: string) => {
+    setExpandedProjectId((current) => (
+      current === repositoryId ? "" : repositoryId
+    ));
+    startProjectChat(repositoryId);
+    setAttachOpen(false);
+  };
+
+  const setProjectSelection = (
+    repositoryIds: string[],
+    preserveMessages = false,
+  ) => {
     const uniqueIds = [...new Set(repositoryIds)];
     setSelectedIds(uniqueIds);
     if (!uniqueIds.includes(selectedId)) {
       setSelectedId(uniqueIds[0] || "");
     }
-    setMessages([]);
+    if (!preserveMessages) {
+      setMessages([]);
+    }
     setExplorerOpen(false);
     setFileContent(null);
     setSelectedPath("");
     setHighlight(null);
-  };
-
-  const toggleChatRepository = (repositoryId: string) => {
-    const nextIds = selectedIds.includes(repositoryId)
-      ? selectedIds.filter((item) => item !== repositoryId)
-      : [...selectedIds, repositoryId];
-    setProjectSelection(nextIds);
+    if (activeConversationId && uniqueIds.length) {
+      api.updateConversation(activeConversationId, {
+        repository_ids: uniqueIds,
+      })
+        .then((updated) => {
+          setConversations((current) => current.map((conversation) => (
+            conversation.id === updated.id ? updated : conversation
+          )));
+        })
+        .catch((requestError) => setError((requestError as Error).message));
+    }
   };
 
   const clearCurrentMessages = () => {
     setCurrentMessages([]);
-    if (selectedIds.length) {
+    if (activeConversationId) {
+      api.clearConversationMessages(activeConversationId).catch(() => {
+        // The visible chat is already cleared; report failures on next load.
+      });
+    } else if (selectedIds.length) {
       Promise.all(
         selectedIds.map((repositoryId) => (
           api.clearChatMessages(repositoryId, sessionId)
@@ -815,6 +994,55 @@ function ChatPage({
       ).catch(() => {
         // The visible chat is already cleared; report failures on next load.
       });
+    }
+  };
+
+  const startNewChat = () => {
+    setActiveConversationId("");
+    setSelectedId("");
+    setSelectedIds([]);
+    setExpandedProjectId("");
+    setMessages([]);
+    setQuery("");
+    setError("");
+    setExplorerOpen(false);
+    setAttachOpen(false);
+  };
+
+  const openConversation = (conversation: ConversationRecord) => {
+    const available = new Set(
+      repositories.map((repository) => repository.repository_id),
+    );
+    const projectIds = conversation.repository_ids.filter((repositoryId) => (
+      available.has(repositoryId)
+    ));
+    setActiveConversationId(conversation.id);
+    setSelectedIds(projectIds);
+    setSelectedId(projectIds[0] || "");
+    setMessages([]);
+    setQuery("");
+    setError("");
+    setExplorerOpen(false);
+    setExplorerRepositoryId(projectIds[0] || "");
+    setExpandedProjectId(projectIds[0] || "");
+  };
+
+  const deleteSavedConversation = async (
+    event: MouseEvent,
+    conversation: ConversationRecord,
+  ) => {
+    event.stopPropagation();
+    if (!window.confirm(`Delete the chat "${conversation.title}"?`)) return;
+    try {
+      await api.deleteConversation(conversation.id);
+      setConversations((current) => current.filter(
+        (item) => item.id !== conversation.id
+      ));
+      if (activeConversationId === conversation.id) {
+        startNewChat();
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
     }
   };
 
@@ -930,14 +1158,16 @@ function ChatPage({
           throw new Error("Attach at most 10 GitHub repositories at once.");
         }
         setPhase("cloning");
-        window.setTimeout(() => setPhase((current) => current === "cloning" ? "indexing" : current), 900);
         for (const url of urls) {
-          results.push(await api.ingest(url, branch.trim() || "main"));
+          results.push(await api.ingest(
+            url,
+            branch.trim() || "main",
+            (progress) => setPhase(progress.stage),
+          ));
         }
       } else {
         if (!selectedFiles.length) return;
         setPhase("uploading");
-        window.setTimeout(() => setPhase((current) => current === "uploading" ? "indexing" : current), 900);
         if (attachType === "zip") {
           if (selectedFiles.length > 10) {
             throw new Error("Attach at most 10 ZIP projects at once.");
@@ -949,7 +1179,12 @@ function ChatPage({
                 : file.name.replace(/\.zip$/i, "")
             );
             results.push(
-              await api.uploadProject("zip", displayName, [file]),
+              await api.uploadProject(
+                "zip",
+                displayName,
+                [file],
+                (progress) => setPhase(progress.stage),
+              ),
             );
           }
         } else {
@@ -964,25 +1199,44 @@ function ChatPage({
           if (folders.size > 10) {
             throw new Error("Attach at most 10 folders at once.");
           }
-          for (const [folderName, files] of folders) {
-            const displayName = (
-              folders.size === 1 && projectName.trim()
-                ? projectName.trim()
-                : folderName
-            );
+          const combinedName = projectNameEdited ? projectName.trim() : "";
+          if (folders.size > 1 && combinedName) {
             results.push(
-              await api.uploadProject("folder", displayName, files),
+              await api.uploadProject(
+                "folder",
+                combinedName,
+                selectedFiles,
+                (progress) => setPhase(progress.stage),
+              ),
             );
+          } else {
+            for (const [folderName, files] of folders) {
+              const displayName = (
+                folders.size === 1 && projectName.trim()
+                  ? projectName.trim()
+                  : folderName
+              );
+              results.push(
+                await api.uploadProject(
+                  "folder",
+                  displayName,
+                  files,
+                  (progress) => setPhase(progress.stage),
+                ),
+              );
+            }
           }
         }
       }
       setPhase("ready");
       const uploadedIds = results.map((result) => result.repository_id);
-      setProjectSelection(uploadedIds);
-      await loadRepositories(uploadedIds);
+      const nextScopeIds = [...new Set([...selectedIds, ...uploadedIds])];
+      setProjectSelection(nextScopeIds, true);
+      await loadRepositories(nextScopeIds);
       onIndexComplete();
       setRepoUrl("");
       setProjectName("");
+      setProjectNameEdited(false);
       setSelectedFiles([]);
       window.setTimeout(() => {
         setAttachOpen(false);
@@ -1007,13 +1261,32 @@ function ChatPage({
     setLoading(true);
     setError("");
     try {
-      const result = await api.query(text, selectedIds, sessionId);
+      let conversationId = activeConversationId;
+      if (!conversationId) {
+        const title = text.length > 64
+          ? `${text.slice(0, 61).trim()}…`
+          : text;
+        const conversation = await api.createConversation(selectedIds, title);
+        conversationId = conversation.id;
+        setConversations((current) => [
+          conversation,
+          ...current.filter((item) => item.id !== conversation.id),
+        ]);
+      }
+      const result = await api.query(
+        text,
+        selectedIds,
+        sessionId,
+        conversationId,
+      );
       setCurrentMessages([...pending, {
         id: crypto.randomUUID(),
         role: "assistant",
         content: result.answer,
         sources: result.sources,
       }]);
+      setActiveConversationId(conversationId);
+      await loadConversations(conversationId);
       if (explorerOpen && result.sources.length) {
         openSource(result.sources[0]);
       }
@@ -1025,28 +1298,157 @@ function ChatPage({
   };
 
   return (
-    <section className={explorerOpen ? "chat-page explorer-open" : "chat-page"}>
+    <div className={sidebarOpen ? "chat-layout" : "chat-layout sidebar-collapsed"}>
+      <aside className="conversation-sidebar" aria-label="Projects and recent chats">
+        <div className="conversation-sidebar-heading">
+          <strong>Workspace</strong>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Collapse conversation sidebar"
+            title="Collapse sidebar"
+          >
+            <SidebarIcon name="collapse" />
+          </button>
+        </div>
+        <button className="new-chat-button" onClick={startNewChat}>
+          <SidebarIcon name="plus" />
+          <span>New chat</span>
+        </button>
+        <div className="sidebar-section">
+          <h3>Projects</h3>
+          <div className="sidebar-items project-items">
+            {repositories.map((repository) => {
+              const expanded = expandedProjectId === repository.repository_id;
+              const projectConversations = conversations.filter(
+                (conversation) => conversation.repository_ids.includes(
+                  repository.repository_id,
+                ),
+              );
+              return (
+                <div
+                  className={expanded ? "project-group expanded" : "project-group"}
+                  key={repository.repository_id}
+                >
+                  <button
+                    className="project-summary"
+                    onClick={() => openProjectDetails(repository.repository_id)}
+                    title={`Open ${repository.name}`}
+                  >
+                    <SidebarIcon name="chevron" />
+                    <SidebarIcon name="folder" />
+                    <span>
+                      <strong>{repository.name}</strong>
+                      <small>
+                        {repository.source_type} · {projectConversations.length} chat
+                        {projectConversations.length === 1 ? "" : "s"}
+                      </small>
+                    </span>
+                  </button>
+                  {expanded && (
+                    <div className="project-details">
+                      <div className="project-metrics">
+                        <span><strong>{repository.files_processed}</strong>files</span>
+                        <span><strong>{repository.chunks_created}</strong>chunks</span>
+                        <span><strong>{repository.chunks_indexed}</strong>indexed</span>
+                      </div>
+                      <button
+                        className="project-new-chat"
+                        onClick={() => startProjectChat(repository.repository_id)}
+                      >
+                        <SidebarIcon name="plus" />
+                        New chat
+                      </button>
+                      <div className="project-chat-list">
+                        {projectConversations.map((conversation) => (
+                          <div
+                            className={
+                              activeConversationId === conversation.id
+                                ? "conversation-row active"
+                                : "conversation-row"
+                            }
+                            key={conversation.id}
+                          >
+                            <button
+                              className="conversation-open"
+                              onClick={() => openConversation(conversation)}
+                              title={conversation.title}
+                            >
+                              <SidebarIcon name="chat" />
+                              <span className="conversation-copy">
+                                <strong>{conversation.title}</strong>
+                                <small>
+                                  {new Date(conversation.updated_at).toLocaleDateString()}
+                                </small>
+                              </span>
+                            </button>
+                            <button
+                              className="conversation-delete"
+                              aria-label={`Delete ${conversation.title}`}
+                              onClick={(event) => deleteSavedConversation(
+                                event,
+                                conversation,
+                              )}
+                            >
+                              <SidebarIcon name="trash" />
+                            </button>
+                          </div>
+                        ))}
+                        {!projectConversations.length && (
+                          <p>No saved chats for this project.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!repositories.length && <p>No projects indexed yet.</p>}
+          </div>
+        </div>
+      </aside>
+      <section className={explorerOpen ? "chat-page explorer-open" : "chat-page"}>
       {explorerOpen && (
         <CodeExplorer
+          projects={activeRepositories}
+          selectedRepositoryId={explorerRepositoryId || selectedId}
           files={repositoryFiles}
           selectedPath={selectedPath}
           fileContent={fileContent}
           highlight={highlight}
           loading={fileLoading}
           error={explorerError}
+          onSelectRepository={(repositoryId) => {
+            if (repositoryId === (explorerRepositoryId || selectedId)) return;
+            setExplorerRepositoryId(repositoryId);
+            setSelectedPath("");
+            setFileContent(null);
+            setHighlight(null);
+          }}
           onSelect={(path) => openFile(path)}
           onClose={() => setExplorerOpen(false)}
         />
       )}
       <div className="panel conversation">
         <div className="panel-heading">
-          <div>
-            <h2>Ask your codebase</h2>
-            <p>
-              {selectedProjectCount
-                ? `Answers are scoped to ${selectedProjectNames.join(", ")}.`
-                : "Attach one or more projects to begin."}
-            </p>
+          <div className="chat-heading-group">
+            {!sidebarOpen && (
+              <button
+                className="sidebar-open-button"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open conversation sidebar"
+                title="Open sidebar"
+              >
+                <SidebarIcon name="menu" />
+              </button>
+            )}
+            <div>
+              <h2>Ask your codebase</h2>
+              <p>
+                {selectedProjectCount
+                  ? `Answers are scoped to ${selectedProjectNames.join(", ")}.`
+                  : "Attach one or more projects to begin."}
+              </p>
+            </div>
           </div>
           {messages.length > 0 && <button className="text-button" onClick={clearCurrentMessages}>Clear chat</button>}
         </div>
@@ -1058,51 +1460,66 @@ function ChatPage({
                 <strong>
                   {selectedProjectCount === 1
                     ? activeRepository.name
-                    : `${selectedProjectCount} projects selected`}
+                    : selectedProjectNames.join(" + ")}
                 </strong>
                 <small>
                   {selectedProjectCount === 1
-                    ? `${activeRepository.source_type} · ready`
-                    : "combined project search"}
+                    ? repositorySubtitle(activeRepository)
+                    : `${selectedProjectCount} projects · ready`}
                 </small>
               </div>
-              <button onClick={() => setAttachOpen(!attachOpen)} aria-label="Change project">Change</button>
+            </div>
+            <div className="workspace-actions">
               <button
-                className="chip-delete"
+                className="explorer-toggle"
+                onClick={() => setExplorerOpen((open) => !open)}
+              >
+                {explorerOpen ? "Hide code" : "View code"}
+              </button>
+              <button
+                className="workspace-delete"
                 onClick={deleteCurrentRepository}
                 disabled={deleting}
                 aria-label={`Delete ${activeRepository.name}`}
+                title={`Delete ${activeRepository.name}`}
               >
-                {deleting ? "Deleting…" : "Delete"}
+                <SidebarIcon name="trash" />
               </button>
             </div>
-            {repositories.length > 1 && (
-              <details className="project-picker">
-                <summary>Select projects ({selectedProjectCount})</summary>
-                <div>
-                  {repositories.map((repository) => (
-                    <label key={repository.repository_id}>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(repository.repository_id)}
-                        onChange={() => toggleChatRepository(repository.repository_id)}
-                      />
-                      <span>{repository.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </details>
-            )}
-            <button
-              className="explorer-toggle"
-              onClick={() => setExplorerOpen((open) => !open)}
-            >
-              {explorerOpen ? "Hide code" : "View code"}
-            </button>
           </div>
         )}
         {attachOpen && (
-          <form className="attachment-panel" onSubmit={attachProject}>
+          <div
+            className="attachment-modal-backdrop"
+            onMouseDown={() => {
+              if (!phase) setAttachOpen(false);
+            }}
+          >
+            <div
+              className="attachment-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="attachment-modal-title"
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="attachment-modal-heading">
+                <div>
+                  <h3 id="attachment-modal-title">Add to chat</h3>
+                  <p>Attach projects or paste code without leaving your conversation.</p>
+                </div>
+                <button
+                  type="button"
+                  className="attachment-modal-close"
+                  onClick={() => {
+                    if (!phase) setAttachOpen(false);
+                  }}
+                  disabled={!!phase}
+                  aria-label="Close attachment dialog"
+                >
+                  ×
+                </button>
+              </div>
+              <form className="attachment-panel" onSubmit={attachProject}>
             <div className="attachment-tabs">
               {(["github", "zip", "folder", "code"] as const).map((type) => (
                 <button type="button" className={attachType === type ? "active" : ""} onClick={() => {
@@ -1135,7 +1552,14 @@ function ChatPage({
               />
             ) : (
               <div className="attachment-fields upload-fields">
-                <input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project name (optional for batches)" />
+                <input
+                  value={projectName}
+                  onChange={(event) => {
+                    setProjectName(event.target.value);
+                    setProjectNameEdited(true);
+                  }}
+                  placeholder="Workspace name for multiple folders (optional)"
+                />
                 <label className="file-picker">
                   <input
                     ref={attachType === "folder" ? folderInput : undefined}
@@ -1165,13 +1589,15 @@ function ChatPage({
             <div className="attachment-actions">
               <div className={`index-phase ${phase ? "visible" : ""}`}>
                 <i className={phase === "ready" ? "done" : ""}>{phase === "ready" ? "✓" : "↻"}</i>
-                <span>{phase || (attachType === "code" ? "Language is detected automatically" : "Files stay scoped to this project")}</span>
+                <span>{indexPhaseLabels[phase] || (attachType === "code" ? "Language is detected automatically" : "Files stay scoped to this project")}</span>
               </div>
               <button disabled={!!phase}>
                 {phase ? "Working…" : attachType === "code" ? "Explain in chat →" : "Attach and index →"}
               </button>
             </div>
-          </form>
+              </form>
+            </div>
+          </div>
         )}
         <div className="messages" aria-live="polite">
           {messages.length === 0 && (
@@ -1180,7 +1606,7 @@ function ChatPage({
                 ? `Chat with ${selectedProjectCount === 1 ? activeRepository?.name : `${selectedProjectCount} projects`}`
                 : "Attach a project or paste code"}
               text={selectedProjectCount
-                ? "Ask across the selected project scope, or use the plus button to attach more."
+                ? "Ask across the attached projects, or use the plus button to add another."
                 : "Use the plus button to add one or more projects or explain pasted code."}
             />
           )}
@@ -1214,7 +1640,14 @@ function ChatPage({
         </div>
         {error && <ErrorNotice message={error} />}
         <form className="query-form" onSubmit={submit}>
-          <button type="button" className="plus-button" onClick={() => setAttachOpen(!attachOpen)} aria-label="Add project or code">
+          <button
+            type="button"
+            className="plus-button"
+            onClick={() => {
+              if (!phase) setAttachOpen(!attachOpen);
+            }}
+            aria-label="Add project or code"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 5v14M5 12h14" />
             </svg>
@@ -1231,7 +1664,8 @@ function ChatPage({
           <button disabled={!query.trim() || loading || !selectedProjectCount}>{loading ? "Working…" : "Ask →"}</button>
         </form>
       </div>
-    </section>
+      </section>
+    </div>
   );
 }
 

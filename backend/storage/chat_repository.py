@@ -20,21 +20,26 @@ class SupabaseChatRepository:
         role: str,
         content: str,
         sources: List[Dict[str, Any]] | None = None,
+        conversation_id: str | None = None,
     ) -> Dict[str, Any]:
         if role not in self.ROLES:
             raise ValueError("Chat role must be user or assistant")
         if not content.strip():
             raise ValueError("Chat content cannot be empty")
 
+        payload = {
+            "repository_id": repository_id,
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "sources": sources or [],
+        }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+
         response = (
             self._client.table(self.TABLE_NAME)
-            .insert({
-                "repository_id": repository_id,
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-                "sources": sources or [],
-            })
+            .insert(payload)
             .execute()
         )
         if not response.data:
@@ -56,11 +61,45 @@ class SupabaseChatRepository:
         )
         return list(response.data or [])
 
+    def list_conversation(
+        self,
+        conversation_id: str,
+    ) -> List[Dict[str, Any]]:
+        response = (
+            self._client.table(self.TABLE_NAME)
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .order("created_at")
+            .execute()
+        )
+        return list(response.data or [])
+
     def clear(self, repository_id: str, session_id: str) -> None:
         (
             self._client.table(self.TABLE_NAME)
             .delete()
             .eq("repository_id", repository_id)
             .eq("session_id", session_id)
+            .execute()
+        )
+
+    def clear_conversation(self, conversation_id: str) -> None:
+        (
+            self._client.table(self.TABLE_NAME)
+            .delete()
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+
+    def reassign_conversation_repository(
+        self,
+        conversation_id: str,
+        repository_id: str,
+    ) -> None:
+        """Keep a multi-project chat when its primary project is deleted."""
+        (
+            self._client.table(self.TABLE_NAME)
+            .update({"repository_id": repository_id})
+            .eq("conversation_id", conversation_id)
             .execute()
         )

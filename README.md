@@ -16,8 +16,8 @@ embeddings, and retrieves the most relevant code before asking Gemini to
 generate an answer.
 
 The application supports multiple projects. Source files, vector embeddings,
-project metadata, and chat history are persisted in Supabase and scoped to the
-selected project.
+project metadata, named conversation history, and chat messages are persisted
+in Supabase and scoped to the selected projects.
 
 ## Features
 
@@ -31,7 +31,8 @@ selected project.
 - Retrieve code semantically instead of relying only on keyword matching
 - Display related files and line ranges with each answer
 - Browse an expandable VS Code-style project tree and inspect source files
-- Keep separate persisted chat history for each project and browser session
+- Create named chats, search recent conversations, and reopen their complete
+  project scope and message history from a collapsible workspace sidebar
 - View project, indexing, query, and system-health information on a dashboard
 - Delete one or multiple projects, including their database records, vectors,
   chat history, and stored source files
@@ -349,7 +350,7 @@ npm run typecheck
 npm run build
 ```
 
-At the time of this README update, the backend suite contains **59 passing
+At the time of this README update, the backend suite contains **61 passing
 tests** with approximately **67% statement coverage**. GitHub Actions runs the
 suite with Python 3.12. Test counts and coverage can change as the project
 evolves; the workflow result is the authoritative status.
@@ -393,15 +394,17 @@ Render static site → Render Docker API → Gemini APIs
                                       └→ Supabase Postgres/pgvector/Storage
 ```
 
-No demo credentials are required. The hosted application currently has no user
-authentication.
+The hosted application uses the optional single-administrator login. Supply
+demo credentials privately when sharing the deployment; never commit them to
+the repository.
 
 ## Error and edge-case handling
 
 - Unsupported and generated files are excluded from indexing.
 - Empty uploads, invalid types, oversized parts, unsafe paths, and unsafe ZIP
   members are rejected.
-- Repository IDs scope vector retrieval, files, and chat history.
+- Conversation IDs persist named chat history, while repository IDs scope
+  vector retrieval and source files.
 - Failed ingestion is reported through project status and error messages.
 - API ingestion and query endpoints are rate-limited.
 - Project deletion cascades through related database records and explicitly
@@ -413,7 +416,7 @@ authentication.
 - GitHub ingestion currently targets repositories the server can clone; a
   `GITHUB_TOKEN` may be configured for supported private access.
 - Source files are text-based and use a supported filename or extension.
-- One anonymous browser session represents one chat identity.
+- The current deployment is designed for one authenticated administrator.
 - Supabase and Gemini are available and their quotas have not been exhausted.
 - The embedding schema and query model both use 384 dimensions.
 

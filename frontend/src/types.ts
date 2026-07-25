@@ -50,6 +50,13 @@ export interface IngestResponse {
   source_type: "github" | "zip" | "folder";
 }
 
+export interface IngestionProgress {
+  stage: "uploading" | "reading" | "detecting" | "chunking" | "embedding" | "saving" | "ready" | "failed";
+  progress: number;
+  message: string;
+  updated_at: number;
+}
+
 export interface RepositoryRecord {
   repository_id: string;
   name: string;
@@ -87,4 +94,13 @@ export interface ChatMessage {
   content: string;
   sources?: SourceReference[];
   created_at?: string;
+  conversation_id?: string;
+}
+
+export interface ConversationRecord {
+  id: string;
+  title: string;
+  repository_ids: string[];
+  created_at: string;
+  updated_at: string;
 }

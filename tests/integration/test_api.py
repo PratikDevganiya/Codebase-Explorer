@@ -16,6 +16,11 @@ os.environ["SUPABASE_URL"] = "https://ci-placeholder.supabase.co"
 os.environ["SUPABASE_SECRET_KEY"] = (
     "sb_secret_ci_placeholder_not_a_real_credential"
 )
+# Integration tests exercise API behavior without depending on a developer's
+# private local login configuration.
+os.environ["ADMIN_USERNAME"] = ""
+os.environ["ADMIN_PASSWORD"] = ""
+os.environ["AUTH_SECRET"] = ""
 
 
 # Mock the initialize_system function before importing app
@@ -148,7 +153,11 @@ def test_explain_endpoint_detects_language_when_omitted():
 
 def test_zip_upload_registers_repository_and_scopes_query(tmp_path, monkeypatch):
     import backend.api.main as main_module
-    from tests.fakes import InMemoryRepositoryStore, InMemorySourceStorage
+    from tests.fakes import (
+        InMemoryConversationStore,
+        InMemoryRepositoryStore,
+        InMemorySourceStorage,
+    )
 
     mock_initialize_system()
     monkeypatch.setattr(main_module.settings, "uploads_path", tmp_path / "uploads")
@@ -161,6 +170,11 @@ def test_zip_upload_registers_repository_and_scopes_query(tmp_path, monkeypatch)
         main_module,
         "source_storage",
         InMemorySourceStorage(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "conversation_repository",
+        InMemoryConversationStore(),
     )
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as archive:
